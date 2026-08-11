@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ValheimRoot Condition="'$(ValheimRoot)' == ''">C:\ValheimServer\server</ValheimRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Mono.Cecil" HintPath="$(ValheimRoot)\BepInEx\core\Mono.Cecil.dll" Private="true" />
+    <ProjectReference Include="..\..\src\ArenaGuard\ArenaGuard.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true"
+                      Condition="'$(SkipArenaGuardBuild)' != 'true'" />
+  </ItemGroup>
+</Project>

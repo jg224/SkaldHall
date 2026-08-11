@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/ArenaGuard/ArenaGuard.csproj" />
+  <Project Path="tests/ArenaGuard.CoreTests/ArenaGuard.CoreTests.csproj" />
+  <Project Path="tests/ArenaGuard.ApiTests/ArenaGuard.ApiTests.csproj" />
+</Solution>

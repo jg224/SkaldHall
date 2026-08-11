@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+</Project>

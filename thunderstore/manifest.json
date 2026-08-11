@@ -1,0 +1,10 @@
+{
+  "name": "SkaldHall",
+  "version_number": "0.0.1",
+  "website_url": "https://github.com/jg224/SkaldHall",
+  "description": "Alpha server-authoritative NPC activities for Valheim. Build protected arenas now; quest-giver and additional Hall NPCs are planned.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2333",
+    "ValheimModding-Jotunn-2.29.2"
+  ]
+}

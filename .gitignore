@@ -1,0 +1,25 @@
+# Build and test output
+dist/
+artifacts/
+tmp/
+.tmp_ilspy/
+**/bin/
+**/obj/
+TestResults/
+
+# Local Thunderstore page mockup and its dependency cache
+thunderstore-preview/
+
+# IDE and operating-system files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Local logs and server state
+*.log
+*.world-*.json
+*.world-*.json.*
