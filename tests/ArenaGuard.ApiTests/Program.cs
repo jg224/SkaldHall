@@ -9,7 +9,7 @@ internal static class Program
 {
     private const string PluginGuid = "jg224.arenaguard";
     private const string PluginName = "SkaldHall";
-    private const string PluginVersion = "0.0.2";
+    private const string PluginVersion = "0.0.3";
     private const string JotunnGuid = "com.jotunn.jotunn";
 
     private static readonly List<KeyValuePair<string, Action<TestContext>>> Tests =
@@ -92,7 +92,7 @@ internal static class Program
         Equal(PluginGuid, AttributeString(attribute, 0));
         Equal(PluginName, AttributeString(attribute, 1));
         Equal(PluginVersion, AttributeString(attribute, 2));
-        Equal(new Version(0, 0, 2, 0), context.Mod.Name.Version);
+        Equal(new Version(0, 0, 3, 0), context.Mod.Name.Version);
 
         Equal(PluginGuid, ConstantString(plugin, "PluginGuid"));
         Equal(PluginName, ConstantString(plugin, "PluginName"));

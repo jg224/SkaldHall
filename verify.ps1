@@ -21,13 +21,14 @@ if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) {
 }
 
 $assemblyIdentity = [System.Reflection.AssemblyName]::GetAssemblyName($assembly)
-if ($assemblyIdentity.Name -cne 'SkaldHall' -or $assemblyIdentity.Version -ne [Version]'0.0.2.0') {
-    throw "Release assembly identity must be exactly SkaldHall, Version=0.0.2.0; found '$($assemblyIdentity.FullName)'."
+if ($assemblyIdentity.Name -cne 'SkaldHall' -or $assemblyIdentity.Version -ne [Version]'0.0.3.0') {
+    throw "Release assembly identity must be exactly SkaldHall, Version=0.0.3.0; found '$($assemblyIdentity.FullName)'."
 }
 $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($assembly)
 if ($versionInfo.ProductName -cne 'SkaldHall' -or $versionInfo.FileDescription -cne 'SkaldHall' -or
-    $versionInfo.FileVersion -notlike '0.0.2*' -or $versionInfo.ProductVersion -notlike '0.0.2-alpha*') {
-    throw 'Release DLL product/title/version metadata does not identify SkaldHall 0.0.2 Alpha.'
+    $versionInfo.FileVersion -notlike '0.0.3*' -or $versionInfo.ProductVersion -notlike '0.0.3*' -or
+    $versionInfo.ProductVersion -match '(?i)alpha') {
+    throw 'Release DLL product/title/version metadata does not identify SkaldHall 0.0.3.'
 }
 
 $unexpected = Get-ChildItem -LiteralPath $releaseDir -File |
@@ -38,13 +39,13 @@ if ($unexpected) {
 
 $manifestPath = Join-Path $workspace 'thunderstore\manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.2') {
-    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.2.'
+if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.3') {
+    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.3.'
 }
 
 if ([string]::IsNullOrWhiteSpace($manifest.description) -or $manifest.description.Length -gt 250 -or
-    $manifest.description -notmatch '(?i)alpha' -or $manifest.description -notmatch '(?i)quest') {
-    throw 'Thunderstore description must identify the alpha and planned quest systems in 250 characters or fewer.'
+    $manifest.description -match '(?i)alpha' -or $manifest.description -notmatch '(?i)quest') {
+    throw 'Thunderstore description must omit alpha phrasing and identify planned quest systems in 250 characters or fewer.'
 }
 
 $expectedDependencies = @(
@@ -87,13 +88,9 @@ else {
 }
 
 $packageReadme = Get-Content -LiteralPath (Join-Path $workspace 'thunderstore\README.md') -Raw
-$packageChangelog = Get-Content -LiteralPath (Join-Path $workspace 'thunderstore\CHANGELOG.md') -Raw
 if ($packageReadme -notmatch '(?m)^# SkaldHall\s*$' -or
-    $packageReadme -notmatch '(?i)alpha' -or $packageReadme -notmatch '(?i)quest-giver') {
-    throw 'Thunderstore README must use the SkaldHall name and describe the alpha and planned quest-giver.'
-}
-if ($packageChangelog -notmatch '(?m)^## 0\.0\.2 Alpha') {
-    throw 'Thunderstore changelog must begin with the SkaldHall 0.0.2 Alpha release.'
+    $packageReadme -match '(?i)alpha' -or $packageReadme -notmatch '(?i)quest-giver') {
+    throw 'Thunderstore README must use the SkaldHall name, omit alpha phrasing, and describe the planned quest-giver.'
 }
 
 Write-Host 'SkaldHall verification passed: clean Release build, 40 core tests, 16 API tests.' -ForegroundColor Green

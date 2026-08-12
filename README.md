@@ -1,6 +1,6 @@
 # SkaldHall
 
-SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.2 is an alpha release of its administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. Any number of named entrance gates can lead to one arena hub. One player fights at a time while nearby players watch as non-interacting ghost spectators.
+SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.3 provides administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. Any number of named entrance gates can lead to one arena hub. One player fights at a time while nearby players watch as non-interacting ghost spectators.
 
 Arena structures cannot take damage. Arena combat grants no loot or skill experience, consumes no ammunition, and causes no equipment durability loss. General movement-speed bonuses such as Speedy Paths are suppressed inside the protected arena while Valheim's Run skill and equipped-item modifiers, including trinkets, remain active. Before teleporting, each combatant chooses exactly three foods their character has discovered. SkaldHall applies that temporary loadout directly, fills health/stamina/eitr, and supplies a challenge-long Rested effect without creating or consuming inventory items. The player's original foods and Rested duration are restored when the run ends. Lethal damage ends the challenge without a player death, clears negative status effects, restores full health, and returns the player three metres in front of the Arena Master.
 
@@ -8,7 +8,7 @@ Arena structures cannot take damage. Arena combat grants no loot or skill experi
 
 - BepInExPack for Valheim 5.4.2333
 - Jötunn 2.29.2
-- SkaldHall 0.0.2 on the server and every client
+- SkaldHall 0.0.3 on the server and every client
 
 SkaldHall uses Jötunn's required-client compatibility check. Keep the same SkaldHall patch version on the server and clients.
 
