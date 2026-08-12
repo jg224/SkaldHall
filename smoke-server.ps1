@@ -15,7 +15,7 @@ if (-not $AllowNetworkLaunch)
 
 $workspaceRoot = $PSScriptRoot
 $sourceServerRoot = (Resolve-Path -LiteralPath $ServerRoot).Path
-$sourceDll = Join-Path $workspaceRoot "src\ArenaGuard\bin\Release\net472\ArenaGuard.dll"
+$sourceDll = Join-Path $workspaceRoot "src\ArenaGuard\bin\Release\net472\SkaldHall.dll"
 $isolatedRoot = Join-Path $workspaceRoot ".arena-server-smoke-live"
 $pluginsRoot = Join-Path $isolatedRoot "BepInEx\plugins"
 $smokePlugin = Join-Path $pluginsRoot "ArenaGuardSmoke"
@@ -27,7 +27,7 @@ $serverExe = Join-Path $isolatedRoot "valheim_server.exe"
 $process = $null
 $pluginLoaded = $false
 $worldReady = $false
-$arenaFault = $false
+$skaldHallFault = $false
 $signVisualValidated = $false
 $challengeHostValidated = $false
 
@@ -89,7 +89,7 @@ try
         }
     }
     New-Item -ItemType Directory -Path $smokePlugin | Out-Null
-    Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $smokePlugin "ArenaGuard.dll")
+    Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $smokePlugin "SkaldHall.dll")
     New-Item -ItemType Directory -Path $smokeRun | Out-Null
 
     $arguments = @(
@@ -122,8 +122,8 @@ try
         else { "" }
         $text = $consoleText + [Environment]::NewLine + $diskText
 
-        $pluginLoaded = $text -match "Loading \[ArenaGuard 0\.1\.12\]" -or
-            $text -match "ArenaGuard.*0\.1\.12"
+        $pluginLoaded = $text -match "Loading \[SkaldHall 0\.0\.2\]" -or
+            $text -match "SkaldHall.*0\.0\.2"
         $worldReady = $text -match "Game server connected" -or
             $text -match "Registering lobby" -or
             $text -match "World loaded"
@@ -133,7 +133,7 @@ try
         $challengeHostValidated =
             $text -match "Validated stationary Arena Master Dvergr: renderers=[1-9][0-9]*, colliders=[1-9][0-9]*, persistent=True, aiDisabled=True, nonSolid=True" -and
             $text -match "Registered ArenaGuard build piece 'ArenaGuard_ChallengeHost'"
-        $arenaFault = $text -match "(?im)^\[(Error|Fatal)\s*:ArenaGuard\]" -or
+        $skaldHallFault = $text -match "(?im)^\[(Error|Fatal)\s*:SkaldHall\]" -or
             $text -match "(?im)^.*(Exception|HarmonyException|TypeLoadException|MissingMethodException).*$([Environment]::NewLine)^\s*at ArenaGuard\."
     }
     while (-not $process.HasExited -and (Get-Date) -lt $deadline -and
@@ -145,11 +145,11 @@ try
     Write-Output "WORLD_READY=$worldReady"
     Write-Output "SIGN_VISUAL_VALIDATED=$signVisualValidated"
     Write-Output "CHALLENGE_HOST_VALIDATED=$challengeHostValidated"
-    Write-Output "ARENAGUARD_FAULT=$arenaFault"
+    Write-Output "SKALDHALL_FAULT=$skaldHallFault"
     Write-Output "PROCESS_EXITED_EARLY=$($process.HasExited)"
     Write-Output "RELEVANT_STARTUP_LINES:"
     ($text -split "`r?`n") |
-        Select-String -Pattern "ArenaGuard|Validated visible non-solid|Validated stationary Arena Master|Game server connected|Registering lobby|World loaded|Exception|HarmonyException|TypeLoadException|MissingMethodException" |
+        Select-String -Pattern "SkaldHall|Validated visible non-solid|Validated stationary Arena Master|Game server connected|Registering lobby|World loaded|Exception|HarmonyException|TypeLoadException|MissingMethodException" |
         Select-Object -Last 100 |
         ForEach-Object { $_.Line }
 
@@ -165,7 +165,7 @@ try
     }
 
     if (-not $pluginLoaded -or -not $worldReady -or -not $signVisualValidated -or
-        -not $challengeHostValidated -or $arenaFault)
+        -not $challengeHostValidated -or $skaldHallFault)
     {
         throw "Isolated smoke validation did not meet all success conditions."
     }

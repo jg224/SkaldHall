@@ -9,6 +9,48 @@ using UnityEngine;
 
 namespace ArenaGuard.Rules
 {
+    [HarmonyPatch(typeof(SpawnSystem), "IsSpawnPointGood")]
+    internal static class ProtectedNaturalSpawnPatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(ref Vector3 spawnPoint, ref bool __result)
+        {
+            if (__result && ArenaRuleContext.IsProtectedPoint(spawnPoint))
+            {
+                __result = false;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(CreatureSpawner), "Spawn")]
+    internal static class ProtectedCreatureSpawnerPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(CreatureSpawner __instance, ref ZNetView __result)
+        {
+            if (__instance == null || !ArenaRuleContext.IsProtectedPoint(__instance.transform.position))
+            {
+                return true;
+            }
+
+            __result = null;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SpawnArea), "FindSpawnPoint")]
+    internal static class ProtectedSpawnAreaPatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(ref Vector3 point, ref bool __result)
+        {
+            if (__result && ArenaRuleContext.IsProtectedPoint(point))
+            {
+                __result = false;
+            }
+        }
+    }
+
     [HarmonyPatch]
     internal static class ArenaSpawnAbilityPatch
     {

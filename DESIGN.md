@@ -331,7 +331,7 @@ namespace ArenaGuard.Domain
 
 ## Conventions
 
-- Build one required client/server `ArenaGuard.dll` targeting `net472`, with BepInEx 5.4.2333, Harmony, Jotunn, Valheim, and Unity references resolved from `C:\ValheimServer\server` and always marked `Private=false`.
+- Build one required client/server `SkaldHall.dll` targeting `net472`, with BepInEx 5.4.2333, Harmony, Jotunn, Valheim, and Unity references resolved from `C:\ValheimServer\server` and always marked `Private=false`.
 - Use BepInEx GUID `jg224.arenaguard`. Require an exact ArenaGuard version match on server and clients; fail connection with a clear message when absent or mismatched.
 - The dedicated server owns arenas, queues, sessions, ladder scopes, spawn plans, roles, records, routes, and admin authorization. Clients may request actions and report owner-side game events, but the server resolves the sending peer and validates the request against current state.
 - All Unity, Valheim, Jotunn, ZNet, ZDO, AI, spawning, teleporting, and player mutations run on the Unity main thread. Pure state-machine calculations may run independently but have no game references.

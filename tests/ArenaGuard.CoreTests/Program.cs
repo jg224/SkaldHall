@@ -20,6 +20,8 @@ internal static partial class Program
         Test("enemy spawns use shuffled markers without immediate repeats", RandomEnemySpawnMarkers),
         Test("admin setup visuals fail closed for non-admins", AdminSetupVisualPolicy),
         Test("admin arena permissions are independent and fail closed", AdminArenaPermissionPolicy),
+        Test("arena movement suppresses general bonuses but preserves equipment", ArenaMovementSpeedNormalization),
+        Test("protected arenas exclude passive wildlife without removing protected actors", ProtectedWildlifePolicy),
         Test("food inventory snapshot remains immutable until restoration", FoodSnapshotIsPreserved),
         Test("queue is FIFO", QueueIsFifo),
         Test("queue acceptance timeout moves player to back", QueueAcceptanceTimeout),
@@ -122,6 +124,39 @@ internal static partial class Program
             "An authenticated admin spectator may pick up items when enabled.");
         False(ArenaAdminPermissionPolicy.CanPickup(ArenaRole.Combatant, true, true),
             "An active combatant cannot use admin pickup privileges.");
+    }
+
+    private static void ArenaMovementSpeedNormalization()
+    {
+        Equal(1.8f, ArenaMovementSpeedPolicy.NormalizeJog(false, 1.8f, 0.1f));
+        Equal(1.1f, ArenaMovementSpeedPolicy.NormalizeJog(true, 1.8f, 0.1f));
+
+        float expectedVanillaRun = (1f + 0.8f * 0.25f) * (1f + 0.1f * 1.5f);
+        Equal(2.25f, ArenaMovementSpeedPolicy.NormalizeRun(false, 2.25f, 0.8f, 0.1f));
+        Equal(expectedVanillaRun,
+            ArenaMovementSpeedPolicy.NormalizeRun(true, 2.25f, 0.8f, 0.1f));
+
+        Equal(0.85f, ArenaMovementSpeedPolicy.NormalizeJog(true, 3f, -0.15f));
+        Equal((1f + 0.8f * 0.25f) * (1f - 0.15f * 1.5f),
+            ArenaMovementSpeedPolicy.NormalizeRun(true, 3f, 0.8f, -0.15f));
+    }
+
+    private static void ProtectedWildlifePolicy()
+    {
+        True(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, false, false, false, true),
+            "Untamed passive wildlife inside a protected arena must be removed.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(false, false, false, false, false, true),
+            "Wildlife outside the protected radius must remain untouched.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, true, false, false, false, true),
+            "Players must never be treated as wildlife.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, true, false, false, true),
+            "Tamed animals must remain untouched.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, false, true, false, true),
+            "The Arena Master must remain untouched.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, false, false, true, true),
+            "Arena-owned enemies must remain until session cleanup.");
+        False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, false, false, false, false),
+            "Non-wildlife characters must not be removed by this policy.");
     }
 
     private static void ModeOneOrdersRoster()

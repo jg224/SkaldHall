@@ -1188,6 +1188,7 @@ namespace ArenaGuard.World
                 ["arenaguard_combat_marker_description"] = "Admin-only cyan beacon for the combatant's starting point. Place exactly one.",
                 ["arenaguard_enemy_marker_description"] = "Admin-only red enemy spawn beacon. Place four; they number themselves automatically.",
                 ["arenaguard_admin_only"] = "Only a server administrator can use this.",
+                ["arenaguard_admin_build_only"] = "Only an authorized arena administrator may build or demolish here.",
                 ["arenaguard_unconfigured"] = "This arena object has not been configured yet.",
                 ["arenaguard_gate_name_topic"] = "Unique gate name"
             };
@@ -1273,6 +1274,8 @@ namespace ArenaGuard.World
         private Renderer[] _renderers = Array.Empty<Renderer>();
         private Projector[] _projectors = Array.Empty<Projector>();
         private Light[] _lights = Array.Empty<Light>();
+        private LightFlicker[] _lightFlickers = Array.Empty<LightFlicker>();
+        private LightLod[] _lightLods = Array.Empty<LightLod>();
         private AudioSource[] _audioSources = Array.Empty<AudioSource>();
         private SphereCollider _interactionCollider;
         private LineRenderer _combatRadiusRing;
@@ -1291,12 +1294,27 @@ namespace ArenaGuard.World
             _renderers = GetComponentsInChildren<Renderer>(true);
             _projectors = GetComponentsInChildren<Projector>(true);
             _lights = GetComponentsInChildren<Light>(true);
+            _lightFlickers = GetComponentsInChildren<LightFlicker>(true);
+            _lightLods = GetComponentsInChildren<LightLod>(true);
             _audioSources = GetComponentsInChildren<AudioSource>(true);
             _interactionCollider = GetComponent<SphereCollider>();
             _combatRadiusRing = GetComponentsInChildren<LineRenderer>(true)
                 .FirstOrDefault(candidate => candidate.name == "CombatRadiusRing");
             _protectedRadiusRing = GetComponentsInChildren<LineRenderer>(true)
                 .FirstOrDefault(candidate => candidate.name == "ProtectedRadiusRing");
+            // Jotunn invokes Awake while constructing the registered prefab
+            // template, before a local player/admin identity exists. Mutating
+            // renderer state then makes the first placement preview inherit an
+            // invisible Core. Defer visibility until a real local player exists.
+            if (Player.m_localPlayer != null)
+            {
+                ApplyAdminVisibility();
+            }
+        }
+
+        protected override void Start()
+        {
+            base.Start();
             ApplyAdminVisibility();
         }
 
@@ -1328,11 +1346,35 @@ namespace ArenaGuard.World
                     projector.enabled = visible;
                 }
             }
+            // LightLod can re-enable an explicitly disabled Light from its
+            // coroutine, and LightFlicker keeps updating it globally. Disable
+            // both controllers while setup visuals are hidden, before forcing
+            // the light itself off, so a hidden Core costs no lighting work and
+            // cannot leave a flashing pool on the arena floor.
+            foreach (LightFlicker flicker in _lightFlickers)
+            {
+                if (flicker != null)
+                {
+                    flicker.enabled = visible;
+                }
+            }
+            foreach (LightLod lightLod in _lightLods)
+            {
+                if (lightLod != null)
+                {
+                    lightLod.enabled = visible;
+                }
+            }
             foreach (Light light in _lights)
             {
                 if (light != null)
                 {
                     light.enabled = visible;
+                    if (!visible)
+                    {
+                        light.intensity = 0f;
+                        light.range = 0f;
+                    }
                 }
             }
             foreach (AudioSource source in _audioSources)
@@ -1672,13 +1714,19 @@ namespace ArenaGuard.World
             base.Awake();
             _renderers = GetComponentsInChildren<Renderer>(true);
             _selectionCollider = GetComponent<SphereCollider>();
-            ApplyAdminVisibility();
+            // Do not write hidden presentation state into Jotunn's registered
+            // marker template before the local administrator is available.
+            if (Player.m_localPlayer != null)
+            {
+                ApplyAdminVisibility();
+            }
         }
 
         protected override void Start()
         {
             bool wasAlreadyReported = ReadBool(ArenaWorldObjects.ZdoPlacementReported, false);
             base.Start();
+            ApplyAdminVisibility();
             if (IsOwner && ArenaWorldObjects.IsLocalAdmin())
             {
                 string arenaId = ArenaWorldObjects.ResolveArenaId(WorldPosition, ArenaId);
