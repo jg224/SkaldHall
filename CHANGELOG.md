@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.2 Alpha - 2026-08-11
+
+- Fix prepared combatants remaining at the Arena Master until staging timed out when the one-way Combat Start move packet was lost. The client now retries the exact server-supplied marker, while the server still verifies arrival before countdown.
+- Resolve dedicated-server combatants through their authenticated peer character ZDO when no local `Player` component exists, fixing the false “staged combatant is unavailable” rejection and keeping boundary popups and combat tracking functional.
+- Rename the distributed assembly from `ArenaGuard.dll` to `SkaldHall.dll` while retaining the established plugin GUID and saved-data identifiers for world compatibility.
+- Recognize Jötunn's server-synchronized administrator status in protected build, demolition, pickup, and interaction rules for clients connected to dedicated servers.
+- Register the missing protected-building message so rejected actions show readable English instead of `$arenaguard_admin_build_only`.
+- Keep registered Core and beacon prefab templates visually intact before a local player exists, fixing the invisible first placement preview that previously required selecting another piece and returning.
+- Disable the Core's inherited light-flicker and light-LOD controllers whenever setup visuals are hidden, preventing residual flashing illumination and avoiding hidden lighting work.
+- Reject natural creature spawn points inside protected arenas and remove untamed passive wildlife or birds that wander across the boundary, while preserving players, tamed animals, the Arena Master, and arena enemies.
+- Normalize player jog and run speed inside protected arenas to Valheim's vanilla formulas, suppressing Speedy Paths and other general movement-speed bonuses.
+- Preserve Run skill and equipped-item movement modifiers, including legitimate trinket bonuses and armor penalties.
+- Add optional Speedy Paths integration that hides its inactive path-speed status while a player is inside an arena; Speedy Paths remains unchanged everywhere else.
+
 ## 0.0.1 Alpha - 2026-08-11
 
 - Rebrand the first public alpha as SkaldHall while retaining the `jg224.arenaguard` plugin identity, state files, prefabs, commands, and DLL name for test-world compatibility.

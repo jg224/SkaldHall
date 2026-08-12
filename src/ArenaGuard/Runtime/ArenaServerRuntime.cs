@@ -67,11 +67,15 @@ namespace ArenaGuard.Runtime
         private static readonly HashSet<long> ActiveCombatantIds = new HashSet<long>();
         private static readonly HashSet<long> AwaitingCombatStartIds = new HashSet<long>();
         private static readonly List<long> StaleCombatantIds = new List<long>();
+        private static readonly List<Character> ProtectedWildlifeCharacters = new List<Character>();
+        private static readonly List<RandomFlyingBird> ProtectedWildlifeBirds = new List<RandomFlyingBird>();
         private static readonly TimeSpan CombatBoundaryPopupInterval = TimeSpan.FromSeconds(1);
+        private const float CombatStartArrivalRadius = 4f;
         private static bool _initialized;
         private static long _loadedWorldUid;
         private static DateTime _nextCollisionRefreshUtc;
         private static DateTime _nextStateBroadcastUtc;
+        private static DateTime _nextProtectedWildlifeSweepUtc;
         private static float _nextClientCombatStartArrivalCheckTime;
         private static bool _clientAdminsMayModifyTerrain;
         private static bool _clientAdminsMayBuild;
@@ -412,17 +416,16 @@ namespace ArenaGuard.Runtime
                 return ArenaRpcResult.Rejected("The staged challenge is not ready for Combat Start.");
             }
 
-            Player player = FindPlayer(context.PlayerId);
-            if (player == null)
+            if (!Near(context.Position, arena.Markers.CombatantStartPosition, CombatStartArrivalRadius))
             {
-                return ArenaRpcResult.Rejected("The staged combatant is unavailable.");
+                return ArenaRpcResult.Rejected("Combat Start arrival has not reached the server yet.");
             }
 
-            // The client chooses no destination. It acknowledges the exact marker
-            // previously commanded by the server after Valheim finishes TeleportTo.
-            // Mirror that known point into the server representation so a stationary
-            // remote player does not need to move to publish a transform update.
-            player.transform.position = ToVector3(arena.Markers.CombatantStartPosition);
+            // The authenticated client chooses neither the arena nor the destination;
+            // it only acknowledges the Combat Start marker supplied by the server.
+            // Dedicated servers do not reliably expose remote characters through
+            // Player.GetAllPlayers(), so this transition must not require a local
+            // Player component after the peer/ZDO identity has already been verified.
             CombatStartMoveRetryUtc.Remove(context.PlayerId);
             bool entered = _engine.EnterCombatFloor(context.PlayerId, session.ResourceSnapshot);
             ProcessEngineEffects();
@@ -973,9 +976,15 @@ namespace ArenaGuard.Runtime
                 {
                     if (ClientPreparations.TryGetValue(snapshot.ArenaId, out ClientPreparationState pending))
                     {
-                        if (!pending.Accepted && DateTime.UtcNow >= pending.SubmittedUtc.AddSeconds(3))
+                        if (!pending.Accepted && DateTime.UtcNow >= pending.SubmittedUtc.AddSeconds(2))
                         {
-                            RollBackLocalPreparation(snapshot.ArenaId, "Arena preparation was not accepted. Choose your food again.");
+                            // Routed RPCs have no delivery guarantee. Keep the
+                            // immutable pre-arena snapshot and retry the same
+                            // submission until the authoritative snapshot says
+                            // preparation is complete or staging closes.
+                            pending.SubmittedUtc = DateTime.UtcNow;
+                            pending.SubmissionAttempts++;
+                            ArenaRpc.SubmitResourceSnapshot(pending.Snapshot);
                         }
                     }
                     if (!ClientPreparations.ContainsKey(snapshot.ArenaId) &&
@@ -1087,13 +1096,38 @@ namespace ArenaGuard.Runtime
                 bool retryPending = ClientCombatStartArrivalRetryUtc.TryGetValue(
                     snapshot.ArenaId,
                     out DateTime retryUtc) && now < retryUtc;
-                if (retryPending || !Near3D(localPosition, snapshot.Markers.CombatantStartPosition, 2f))
+                // TeleportTo may correct the final floor height after accepting
+                // the server-selected destination. A valid arrival must not be
+                // rejected solely because marker Y differs from the floor.
+                bool arrived = Near(
+                    localPosition,
+                    snapshot.Markers.CombatantStartPosition,
+                    CombatStartArrivalRadius);
+                if (arrived)
+                {
+                    if (retryPending)
+                    {
+                        continue;
+                    }
+
+                    ClientCombatStartArrivalRetryUtc[snapshot.ArenaId] = now.AddSeconds(1);
+                    ArenaRpc.ReportCombatStartArrival();
+                    continue;
+                }
+
+                if (retryPending || !snapshot.PreparationComplete)
                 {
                     continue;
                 }
 
+                // The destination is not chosen by the client: it came from the
+                // authenticated server snapshot. Apply it locally as well as
+                // retaining the server's one-way move command. This removes a
+                // fragile dependency on one routed server-to-client packet; the
+                // server still observes the player's authoritative position and
+                // refuses to begin the countdown until Combat Start is reached.
                 ClientCombatStartArrivalRetryUtc[snapshot.ArenaId] = now.AddSeconds(1);
-                ArenaRpc.ReportCombatStartArrival();
+                OnClientMoveRequested(snapshot.Markers.CombatantStartPosition, 0f);
             }
 
             StaleClientCombatStartArrivalArenaIds.Clear();
@@ -1453,8 +1487,11 @@ namespace ArenaGuard.Runtime
                     continue;
                 }
 
-                Player player = FindPlayer(session.Request.PlayerId);
-                if (player == null)
+                if (!TryResolvePlayerState(
+                        session.Request.PlayerId,
+                        out Player player,
+                        out PositionData playerPosition,
+                        out _))
                 {
                     if (session.Phase == SessionPhase.Countdown ||
                         session.Phase == SessionPhase.Fighting ||
@@ -1465,17 +1502,19 @@ namespace ArenaGuard.Runtime
                     continue;
                 }
 
-                bool outside = !Near(ToPositionData(player.transform.position), arena.CorePosition, arena.CombatRadius);
+                bool outside = !Near(playerPosition, arena.CorePosition, arena.CombatRadius);
                 if (ArenaStartPolicy.ShouldTeleportToCombatStart(
                         session.Phase,
                         session.ResourceSnapshot != null))
                 {
                     long playerId = session.Request.PlayerId;
                     AwaitingCombatStartIds.Add(playerId);
-                    bool arrivalConfirmed = Near3D(
-                        ToPositionData(player.transform.position),
+                    // The server owns the target X/Z. Valheim owns the final
+                    // floor height, so arrival confirmation is horizontal.
+                    bool arrivalConfirmed = Near(
+                        playerPosition,
                         arena.Markers.CombatantStartPosition,
-                        2f);
+                        CombatStartArrivalRadius);
                     if (ArenaStartPolicy.ShouldBeginCountdown(
                             session.Phase,
                             session.ResourceSnapshot != null,
@@ -1753,9 +1792,9 @@ namespace ArenaGuard.Runtime
             {
                 TryResolveArenaMasterExit(arena, out destination, out rotationY);
             }
-            Player player = FindPlayer(playerId);
-            if (staging && !useArenaMasterExit && player != null &&
-                Near3D(ToPositionData(player.transform.position), destination, 4f))
+            bool resolved = TryResolvePlayerState(playerId, out _, out PositionData playerPosition, out _);
+            if (staging && !useArenaMasterExit && resolved &&
+                Near3D(playerPosition, destination, 4f))
             {
                 return true;
             }
@@ -1968,18 +2007,13 @@ namespace ArenaGuard.Runtime
                 Player.m_localPlayer.Message(MessageHud.MessageType.TopLeft, message);
                 return;
             }
-            foreach (ZNetPeer peer in ZNet.instance.GetConnectedPeers())
+            if (TryResolvePlayerState(playerId, out _, out _, out ZNetPeer peer) && peer != null)
             {
-                Player player = FindPlayer(playerId);
-                if (player != null && peer.m_characterID == player.GetZDOID())
-                {
-                    ZRoutedRpc.instance.InvokeRoutedRPC(
-                        peer.m_uid,
-                        "ShowMessage",
-                        (int)MessageHud.MessageType.TopLeft,
-                        message);
-                    return;
-                }
+                ZRoutedRpc.instance.InvokeRoutedRPC(
+                    peer.m_uid,
+                    "ShowMessage",
+                    (int)MessageHud.MessageType.TopLeft,
+                    message);
             }
         }
 
@@ -2002,23 +2036,15 @@ namespace ArenaGuard.Runtime
                 return;
             }
 
-            Player player = FindPlayer(playerId);
-            if (player == null)
+            if (!TryResolvePlayerState(playerId, out _, out _, out ZNetPeer peer) || peer == null)
             {
                 return;
             }
-            foreach (ZNetPeer peer in ZNet.instance.GetConnectedPeers())
-            {
-                if (peer.m_characterID == player.GetZDOID())
-                {
-                    ZRoutedRpc.instance.InvokeRoutedRPC(
-                        peer.m_uid,
-                        "ShowMessage",
-                        (int)MessageHud.MessageType.Center,
-                        message);
-                    return;
-                }
-            }
+            ZRoutedRpc.instance.InvokeRoutedRPC(
+                peer.m_uid,
+                "ShowMessage",
+                (int)MessageHud.MessageType.Center,
+                message);
         }
 
         private static void SendGlobalMessage(string message)
@@ -2074,6 +2100,13 @@ namespace ArenaGuard.Runtime
                 ReconcileArenaEnemies();
                 ProcessEngineEffects();
                 RetryPendingRestores();
+
+                DateTime now = DateTime.UtcNow;
+                if (now >= _nextProtectedWildlifeSweepUtc)
+                {
+                    _nextProtectedWildlifeSweepUtc = now.AddSeconds(1);
+                    RemoveProtectedWildlife();
+                }
 
             }
 
@@ -2226,6 +2259,75 @@ namespace ArenaGuard.Runtime
             DespawnSessionEnemies(sessionId, null);
         }
 
+        private static void RemoveProtectedWildlife()
+        {
+            ProtectedWildlifeCharacters.Clear();
+            foreach (Character character in Character.GetAllCharacters())
+            {
+                if (character == null)
+                {
+                    continue;
+                }
+
+                bool inside = ArenaRegistry.FindProtectedArena(
+                    ToPositionData(character.transform.position)) != null;
+                bool arenaEnemy = !string.IsNullOrWhiteSpace(ReadZdo(character, EnemyArenaZdoKey));
+                bool passiveWildlife = character.GetBaseAI() is AnimalAI ||
+                                       character.GetFaction() == Character.Faction.AnimalsVeg;
+                if (ArenaWildlifePolicy.ShouldRemoveCharacter(
+                        inside,
+                        character is Player,
+                        character.IsTamed(),
+                        ArenaWorldObjects.IsChallengeHost(character),
+                        arenaEnemy,
+                        passiveWildlife))
+                {
+                    ProtectedWildlifeCharacters.Add(character);
+                }
+            }
+
+            ProtectedWildlifeBirds.Clear();
+            foreach (IMonoUpdater updater in RandomFlyingBird.Instances)
+            {
+                RandomFlyingBird bird = updater as RandomFlyingBird;
+                if (bird != null && ArenaRegistry.FindProtectedArena(
+                        ToPositionData(bird.transform.position)) != null)
+                {
+                    ProtectedWildlifeBirds.Add(bird);
+                }
+            }
+
+            foreach (Character character in ProtectedWildlifeCharacters)
+            {
+                DestroyProtectedWildlife(character.gameObject);
+            }
+            foreach (RandomFlyingBird bird in ProtectedWildlifeBirds)
+            {
+                if (bird != null)
+                {
+                    DestroyProtectedWildlife(bird.gameObject);
+                }
+            }
+        }
+
+        private static void DestroyProtectedWildlife(GameObject wildlife)
+        {
+            if (wildlife == null)
+            {
+                return;
+            }
+
+            ZNetView view = wildlife.GetComponent<ZNetView>();
+            if (view != null && view.IsValid())
+            {
+                view.ClaimOwnership();
+                ZNetScene.instance?.Destroy(wildlife);
+                return;
+            }
+
+            UnityEngine.Object.Destroy(wildlife);
+        }
+
         private static void DespawnSessionEnemies(string sessionId, string arenaId)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
@@ -2365,6 +2467,7 @@ namespace ArenaGuard.Runtime
             {
                 Snapshot = resources,
                 SubmittedUtc = DateTime.UtcNow,
+                SubmissionAttempts = 1,
                 Accepted = false
             };
             ArenaRpc.SubmitResourceSnapshot(resources);
@@ -2566,7 +2669,9 @@ namespace ArenaGuard.Runtime
             RestoreFoods(player, snapshot.Foods);
             RefreshFoodStats(player);
 
-            player.GetSEMan().RemoveAllStatusEffects();
+            // ArenaGuard owns only the temporary Rested effect. Clearing every
+            // status effect also strips equipment effects such as Megingjord.
+            player.GetSEMan().RemoveStatusEffect(SEMan.s_statusEffectRested, true);
             RestoreRested(player, snapshot.RestedRemainingSeconds);
             player.SetHealth(player.GetMaxHealth());
             player.AddStamina(player.GetMaxStamina());
@@ -2618,9 +2723,8 @@ namespace ArenaGuard.Runtime
 
         private static void AggroArenaEnemy(Character enemy, long combatantPlayerId)
         {
-            Player combatant = FindPlayer(combatantPlayerId);
             MonsterAI monsterAi = enemy?.GetBaseAI() as MonsterAI;
-            if (combatant == null || monsterAi == null)
+            if (monsterAi == null)
             {
                 return;
             }
@@ -2630,7 +2734,11 @@ namespace ArenaGuard.Runtime
                 MonsterAiWakeupMethod?.Invoke(monsterAi, null);
                 monsterAi.SetHuntPlayer(true);
                 monsterAi.Alert();
-                MonsterAiSetTargetMethod?.Invoke(monsterAi, new object[] { combatant });
+                TryResolvePlayerState(combatantPlayerId, out Player combatant, out _, out _);
+                if (combatant != null)
+                {
+                    MonsterAiSetTargetMethod?.Invoke(monsterAi, new object[] { combatant });
+                }
             }
             catch (Exception exception)
             {
@@ -2840,6 +2948,67 @@ namespace ArenaGuard.Runtime
             return Player.GetAllPlayers().FirstOrDefault(player => player != null && player.GetPlayerID() == playerId);
         }
 
+        private static bool TryResolvePlayerState(
+            long playerId,
+            out Player player,
+            out PositionData position,
+            out ZNetPeer peer)
+        {
+            player = FindPlayer(playerId);
+            peer = null;
+            if (player != null)
+            {
+                position = ToPositionData(player.transform.position);
+                ZDOID playerZdoId = player.GetZDOID();
+                if (ZNet.instance != null)
+                {
+                    peer = ZNet.instance.GetConnectedPeers().FirstOrDefault(candidate =>
+                        candidate != null && candidate.m_characterID == playerZdoId);
+                }
+                return true;
+            }
+
+            position = default(PositionData);
+            ZNet znet = ZNet.instance;
+            ZDOMan zdoMan = ZDOMan.instance;
+            ZNetScene scene = ZNetScene.instance;
+            if (playerId <= 0 || znet == null || zdoMan == null || scene == null)
+            {
+                return false;
+            }
+
+            foreach (ZNetPeer candidate in znet.GetConnectedPeers())
+            {
+                if (candidate == null || candidate.m_characterID == ZDOID.None)
+                {
+                    continue;
+                }
+
+                ZDO character = zdoMan.GetZDO(candidate.m_characterID);
+                if (character == null || character.GetOwner() != candidate.m_uid ||
+                    character.GetLong(ZDOVars.s_playerID, 0L) != playerId)
+                {
+                    continue;
+                }
+
+                GameObject prefab = scene.GetPrefab(character.GetPrefab());
+                if (prefab == null || prefab.GetComponent<Player>() == null)
+                {
+                    continue;
+                }
+
+                GameObject instance = scene.FindInstance(candidate.m_characterID);
+                player = instance == null ? null : instance.GetComponent<Player>();
+                position = player == null
+                    ? ToPositionData(character.GetPosition())
+                    : ToPositionData(player.transform.position);
+                peer = candidate;
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool IsLocalAdministrator()
         {
             bool synchronizedAdmin = SynchronizationManager.Instance != null &&
@@ -2857,7 +3026,10 @@ namespace ArenaGuard.Runtime
 
             if (player == Player.m_localPlayer)
             {
-                return ZNet.instance.LocalPlayerIsAdminOrHost();
+                // Dedicated-server clients receive their authoritative admin
+                // flag through Jotunn. Valheim's local host check alone is not
+                // sufficient here and would incorrectly reject remote admins.
+                return IsLocalAdministrator();
             }
 
             ZDOID characterId = player.GetZDOID();
@@ -3170,6 +3342,7 @@ namespace ArenaGuard.Runtime
         {
             internal PlayerResourceSnapshot Snapshot;
             internal DateTime SubmittedUtc;
+            internal int SubmissionAttempts;
             internal bool Accepted;
         }
 

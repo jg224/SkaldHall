@@ -1,20 +1,20 @@
 # SkaldHall
 
-SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.1 is an alpha release of its administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. Any number of named entrance gates can lead to one arena hub. One player fights at a time while nearby players watch as non-interacting ghost spectators.
+SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.2 is an alpha release of its administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. Any number of named entrance gates can lead to one arena hub. One player fights at a time while nearby players watch as non-interacting ghost spectators.
 
-Arena structures cannot take damage. Arena combat grants no loot or skill experience, consumes no ammunition, and causes no equipment durability loss. Before teleporting, each combatant chooses exactly three foods their character has discovered. SkaldHall applies that temporary loadout directly, fills health/stamina/eitr, and supplies a challenge-long Rested effect without creating or consuming inventory items. The player's original foods and Rested duration are restored when the run ends. Lethal damage ends the challenge without a player death, clears negative status effects, restores full health, and returns the player three metres in front of the Arena Master.
+Arena structures cannot take damage. Arena combat grants no loot or skill experience, consumes no ammunition, and causes no equipment durability loss. General movement-speed bonuses such as Speedy Paths are suppressed inside the protected arena while Valheim's Run skill and equipped-item modifiers, including trinkets, remain active. Before teleporting, each combatant chooses exactly three foods their character has discovered. SkaldHall applies that temporary loadout directly, fills health/stamina/eitr, and supplies a challenge-long Rested effect without creating or consuming inventory items. The player's original foods and Rested duration are restored when the run ends. Lethal damage ends the challenge without a player death, clears negative status effects, restores full health, and returns the player three metres in front of the Arena Master.
 
 ## Requirements
 
 - BepInExPack for Valheim 5.4.2333
 - Jötunn 2.29.2
-- SkaldHall 0.0.1 on the server and every client
+- SkaldHall 0.0.2 on the server and every client
 
 SkaldHall uses Jötunn's required-client compatibility check. Keep the same SkaldHall patch version on the server and clients.
 
 ## Installation
 
-Install the package in the shared r2modman profile and on the dedicated server, or copy `ArenaGuard.dll` to `BepInEx/plugins/SkaldHall/` in each installation. Restart the server and every game client after replacing the DLL. The internal DLL name and `jg224.arenaguard` plugin identity are intentionally retained so existing ArenaGuard test worlds continue working; never load both an old and new copy of the DLL.
+Install the package in the shared r2modman profile and on the dedicated server, or copy `SkaldHall.dll` to `BepInEx/plugins/SkaldHall/` in each installation. Delete the old `ArenaGuard.dll`, then restart the server and every game client. The `jg224.arenaguard` plugin identity and saved-data identifiers remain unchanged so existing test-world arenas continue working; never load both DLL filenames together.
 
 The server persists arena definitions, gates, queues, interrupted sessions, player return routes, and leaderboards per world under:
 

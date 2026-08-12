@@ -1,4 +1,5 @@
 using ArenaGuard.Config;
+using ArenaGuard.Rules;
 using ArenaGuard.Runtime;
 using ArenaGuard.World;
 using BepInEx;
@@ -16,7 +17,7 @@ namespace ArenaGuard
     {
         public const string PluginGuid = "jg224.arenaguard";
         public const string PluginName = "SkaldHall";
-        public const string PluginVersion = "0.0.1";
+        public const string PluginVersion = "0.0.2";
         public const string JotunnGuid = "com.jotunn.jotunn";
 
         internal static ManualLogSource Log { get; private set; }
@@ -34,6 +35,7 @@ namespace ArenaGuard
 
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
+            SpeedyPathsCompatibility.TryInstall(_harmony);
 
             Log.LogInfo(PluginName + " v" + PluginVersion +
                         " loaded. The same version is required on the server and every client.");

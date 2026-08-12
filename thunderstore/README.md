@@ -10,6 +10,7 @@ SkaldHall is a server-authoritative framework for NPC-led activities in Valheim.
 - **Admin-built arenas:** Configure an Arena Core, Arena Master, combat radius, protected radius, Combat Start, and four randomized Enemy Spawns.
 - **Safe spectators:** Non-combatants inside the arena become non-targetable, non-interacting ghost spectators.
 - **Protected competition:** Arena combat causes no player death, loot, skill experience, ammunition use, equipment durability loss, or combat damage to protected structures and world objects.
+- **Normalized movement:** Speedy Paths and other general speed bonuses are suppressed inside arenas while Run skill, equipment modifiers, and trinket bonuses remain active.
 - **Temporary food loadouts:** Choose exactly three foods the character has discovered. SkaldHall fills health, stamina, and eitr, preserves Rested for the challenge, and restores the original player state afterward.
 - **Live-server support:** FIFO queues, acceptance timeouts, boundary warnings, forfeiture, server-restart recovery, administrator recovery commands, and persistent leaderboards.
 
@@ -45,7 +46,7 @@ SkaldHall is intended to grow beyond arenas:
 - additional activity NPCs and Hall roles;
 - contracts, special events, and other structured multiplayer activities.
 
-These systems are planned and are **not included in 0.0.1**.
+These systems are planned and are **not included in 0.0.2**.
 
 ## License
 

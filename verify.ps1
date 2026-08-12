@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = $PSScriptRoot
 $solution = Join-Path $workspace 'ArenaGuard.slnx'
 $releaseDir = Join-Path $workspace 'src\ArenaGuard\bin\Release\net472'
-$assembly = Join-Path $releaseDir 'ArenaGuard.dll'
+$assembly = Join-Path $releaseDir 'SkaldHall.dll'
 
 dotnet build $solution -c Release
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
@@ -20,16 +20,26 @@ if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) {
     throw "Release DLL was not produced: $assembly"
 }
 
+$assemblyIdentity = [System.Reflection.AssemblyName]::GetAssemblyName($assembly)
+if ($assemblyIdentity.Name -cne 'SkaldHall' -or $assemblyIdentity.Version -ne [Version]'0.0.2.0') {
+    throw "Release assembly identity must be exactly SkaldHall, Version=0.0.2.0; found '$($assemblyIdentity.FullName)'."
+}
+$versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($assembly)
+if ($versionInfo.ProductName -cne 'SkaldHall' -or $versionInfo.FileDescription -cne 'SkaldHall' -or
+    $versionInfo.FileVersion -notlike '0.0.2*' -or $versionInfo.ProductVersion -notlike '0.0.2-alpha*') {
+    throw 'Release DLL product/title/version metadata does not identify SkaldHall 0.0.2 Alpha.'
+}
+
 $unexpected = Get-ChildItem -LiteralPath $releaseDir -File |
-    Where-Object { $_.Name -notin @('ArenaGuard.dll', 'ArenaGuard.pdb') }
+    Where-Object { $_.Name -notin @('SkaldHall.dll', 'SkaldHall.pdb') }
 if ($unexpected) {
     throw "Runtime dependencies were copied into the release output: $($unexpected.Name -join ', ')"
 }
 
 $manifestPath = Join-Path $workspace 'thunderstore\manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.1') {
-    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.1.'
+if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.2') {
+    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.2.'
 }
 
 if ([string]::IsNullOrWhiteSpace($manifest.description) -or $manifest.description.Length -gt 250 -or
@@ -82,8 +92,8 @@ if ($packageReadme -notmatch '(?m)^# SkaldHall\s*$' -or
     $packageReadme -notmatch '(?i)alpha' -or $packageReadme -notmatch '(?i)quest-giver') {
     throw 'Thunderstore README must use the SkaldHall name and describe the alpha and planned quest-giver.'
 }
-if ($packageChangelog -notmatch '(?m)^## 0\.0\.1 Alpha') {
-    throw 'Thunderstore changelog must begin with the SkaldHall 0.0.1 Alpha release.'
+if ($packageChangelog -notmatch '(?m)^## 0\.0\.2 Alpha') {
+    throw 'Thunderstore changelog must begin with the SkaldHall 0.0.2 Alpha release.'
 }
 
-Write-Host 'SkaldHall verification passed: clean Release build, 38 core tests, 15 API tests.' -ForegroundColor Green
+Write-Host 'SkaldHall verification passed: clean Release build, 40 core tests, 16 API tests.' -ForegroundColor Green

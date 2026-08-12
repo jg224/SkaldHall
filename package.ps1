@@ -37,7 +37,7 @@ if (Test-Path -LiteralPath $stage) {
 }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $workspace 'src\ArenaGuard\bin\Release\net472\ArenaGuard.dll') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $workspace 'src\ArenaGuard\bin\Release\net472\SkaldHall.dll') -Destination $stage
 Copy-Item -LiteralPath $manifestPath -Destination $stage
 Copy-Item -LiteralPath (Join-Path $workspace 'thunderstore\README.md') -Destination (Join-Path $stage 'README.md')
 Copy-Item -LiteralPath (Join-Path $workspace 'thunderstore\CHANGELOG.md') -Destination $stage
@@ -50,4 +50,21 @@ if (Test-Path -LiteralPath $zip) {
     Remove-Item -LiteralPath $zip -Force
 }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+try {
+    $entryNames = @($archive.Entries | ForEach-Object { $_.FullName })
+    $requiredEntries = @('CHANGELOG.md', 'icon.png', 'LICENSE', 'manifest.json', 'README.md', 'SkaldHall.dll')
+    if ($entryNames.Count -ne $requiredEntries.Count -or
+        @($requiredEntries | Where-Object { $_ -cnotin $entryNames }).Count -ne 0) {
+        throw "Thunderstore archive contents are not exact: $($entryNames -join ', ')"
+    }
+    if ($entryNames -ccontains 'ArenaGuard.dll' -or $entryNames -cnotcontains 'SkaldHall.dll') {
+        throw 'Thunderstore archive must contain SkaldHall.dll and must not contain ArenaGuard.dll.'
+    }
+}
+finally {
+    $archive.Dispose()
+}
 Write-Host "Created $zip" -ForegroundColor Green

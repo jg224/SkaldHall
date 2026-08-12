@@ -9,7 +9,7 @@ internal static class Program
 {
     private const string PluginGuid = "jg224.arenaguard";
     private const string PluginName = "SkaldHall";
-    private const string PluginVersion = "0.0.1";
+    private const string PluginVersion = "0.0.2";
     private const string JotunnGuid = "com.jotunn.jotunn";
 
     private static readonly List<KeyValuePair<string, Action<TestContext>>> Tests =
@@ -27,6 +27,7 @@ internal static class Program
             Test("live-server recovery and combat boundary safety are wired", VerifyLiveServerSafety),
             Test("the Arena Master is a safe persistent challenge host and legacy signs remain loadable", VerifyChallengeAccessPieces),
             Test("runtime hot paths are cached, throttled, and allocation-free", VerifyHotPathPerformance),
+            Test("arena movement preserves equipment while suppressing general speed bonuses", VerifyArenaMovementSpeedPolicy),
             Test("all required Harmony patches are present", VerifyHarmonyPatchMetadata),
             Test("all patched Valheim members exist in the installed API", VerifyInstalledPatchTargets),
             Test("runtime dependencies are referenced but never bundled", VerifyCleanOutput)
@@ -91,7 +92,7 @@ internal static class Program
         Equal(PluginGuid, AttributeString(attribute, 0));
         Equal(PluginName, AttributeString(attribute, 1));
         Equal(PluginVersion, AttributeString(attribute, 2));
-        Equal(new Version(0, 0, 1, 0), context.Mod.Name.Version);
+        Equal(new Version(0, 0, 2, 0), context.Mod.Name.Version);
 
         Equal(PluginGuid, ConstantString(plugin, "PluginGuid"));
         Equal(PluginName, ConstantString(plugin, "PluginName"));
@@ -251,11 +252,19 @@ internal static class Program
              ContainsOperandText(RequireMethod(runtime, "ConfirmLocalFoodPreparation"), "ArenaFoodSelectionPolicy::IsValid") &&
              ContainsOperandText(RequireMethod(runtime, "ConfirmLocalFoodPreparation"), "SubmitResourceSnapshot"),
             "The owning character must revalidate discovered foods before submitting preparation.");
+        True(ContainsOperandText(RequireMethod(runtime, "OnClientSnapshotReceived"), "SubmitResourceSnapshot") &&
+             RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime/ClientPreparationState")
+                 .Fields.Any(field => field.Name == "SubmissionAttempts"),
+            "An unacknowledged loadout submission must retry without discarding the immutable pre-arena snapshot.");
         MethodDefinition applyArenaFood = RequireMethod(runtime, "ApplyTemporaryArenaFood");
         True(ContainsOperandText(applyArenaFood, "SEMan::s_statusEffectRested") &&
              ContainsOperandText(applyArenaFood, "StatusEffect::m_ttl") &&
              ContainsOperandText(RequireMethod(runtime, "RestoreResources"), "RestoreRested"),
             "Arena food must fill resources, keep Rested for the session, and restore the original Rested state.");
+        MethodDefinition restoreResources = RequireMethod(runtime, "RestoreResources");
+        True(ContainsOperandText(restoreResources, "SEMan::RemoveStatusEffect") &&
+             !ContainsOperandText(restoreResources, "SEMan::RemoveAllStatusEffects"),
+            "Arena restoration must remove only its temporary Rested effect and preserve equipment effects such as Megingjord.");
         int restedReset = FirstOperandIndex(applyArenaFood, "StatusEffect::ResetTime");
         int restedTtl = FirstOperandIndex(applyArenaFood, "StatusEffect::m_ttl");
         True(restedReset >= 0 && restedTtl > restedReset,
@@ -632,6 +641,14 @@ internal static class Program
         True(ContainsOperandText(localAdministrator, "SynchronizationManager::get_PlayerIsAdmin") &&
              ContainsOperandText(localAdministrator, "ZNet::LocalPlayerIsAdminOrHost"),
             "Runtime local-admin resolution must accept Jotunn synchronization after reconnect as well as host status.");
+        True(ContainsOperandText(RequireMethod(runtime, "IsAdministrator"),
+                 "ArenaServerRuntime::IsLocalAdministrator"),
+            "Protected local-player rules must use Jotunn's synchronized dedicated-server admin status.");
+        True(ContainsString(RequireMethod(
+                    RequireType(context.Mod, "ArenaGuard.World.ArenaWorldObjects"),
+                    "RegisterLocalization"),
+                "arenaguard_admin_build_only"),
+            "The protected-building rejection must have a registered localization token.");
         MethodDefinition requestUiMutation = RequireMethod(runtime, "RequestUiAdminMutation");
         True(FirstOperandIndex(requestUiMutation, "ArenaRpc::RequestAdminMutation") >= 0 &&
              FirstOperandIndex(requestUiMutation, "ArenaRpc::RequestAdminMutation") <
@@ -830,10 +847,27 @@ internal static class Program
                 "SendPlayerMove"),
             "The countdown must wait for confirmed Combat Start arrival while movement is retried.");
         True(ContainsOperandText(RequireMethod(runtime, "OnCombatStartArrived"), "EnterCombatFloor") &&
-             ContainsOperandText(RequireMethod(runtime, "OnCombatStartArrived"), "Transform::set_position") &&
+             !ContainsOperandText(RequireMethod(runtime, "OnCombatStartArrived"), "FindPlayer") &&
+             ContainsOperandText(RequireMethod(runtime, "OnCombatStartArrived"), "Near") &&
              ContainsOperandText(RequireMethod(runtime, "ReportClientCombatStartArrival"),
                  "ReportCombatStartArrival"),
-            "A stationary remote combatant must begin only after client arrival is mirrored to the server.");
+            "An authenticated dedicated-server combatant must begin without a local Player component only after its peer position reaches Combat Start.");
+        True(ContainsOperandText(RequireMethod(runtime, "ReportClientCombatStartArrival"),
+                 "OnClientMoveRequested") &&
+             ContainsOperandText(RequireMethod(runtime, "ReportClientCombatStartArrival"),
+                 "ArenaClientSnapshot::PreparationComplete"),
+            "A prepared client must retry the server-supplied Combat Start destination when the one-way move packet is lost.");
+        MethodDefinition combatStartDetection = RequireMethod(runtime, "DetectFloorEntryAndBoundary");
+        True(ContainsOperandText(combatStartDetection, "TryResolvePlayerState") &&
+             ContainsOperandText(RequireMethod(runtime, "TryResolvePlayerState"), "ZDO::GetPosition") &&
+             ContainsOperandText(RequireMethod(runtime, "TryResolvePlayerState"), "ZNet::GetConnectedPeers") &&
+             ContainsOperandText(RequireMethod(runtime, "AggroArenaEnemy"), "TryResolvePlayerState"),
+            "Dedicated-server combat checks must resolve remote players through authenticated peer ZDO state.");
+        True(ContainsOperandText(combatStartDetection, "Near") &&
+             !ContainsOperandText(combatStartDetection, "Near3D") &&
+             ContainsOperandText(RequireMethod(runtime, "ReportClientCombatStartArrival"), "Near") &&
+             !ContainsOperandText(RequireMethod(runtime, "ReportClientCombatStartArrival"), "Near3D"),
+            "Combat Start arrival must tolerate Valheim floor-height correction and validate horizontal proximity.");
         True(ContainsOperandText(RequireMethod(runtime, "TrySendArenaMove"), "Near3D"),
             "Accepting beside the Arena Master must not issue a redundant staging teleport.");
         MethodDefinition masterExit = RequireMethod(runtime, "TryResolveArenaMasterExit");
@@ -898,6 +932,19 @@ internal static class Program
                                 ContainsOperandText(method, "ArenaWorldObjects::IsChallengeHost") &&
                                 ContainsOperandText(method, "ArenaDefinition::ProtectedRadius")),
             "Terminal cleanup must reset untamed creatures in the arena while preserving players, tames, and the Arena Master.");
+        MethodDefinition wildlifeSweep = RequireMethod(runtime, "RemoveProtectedWildlife");
+        True(ContainsOperandText(wildlifeSweep, "Character::GetAllCharacters") &&
+             ContainsOperandText(wildlifeSweep, "RandomFlyingBird::get_Instances") &&
+             ContainsOperandText(wildlifeSweep, "ArenaWildlifePolicy::ShouldRemoveCharacter") &&
+             ContainsOperandText(wildlifeSweep, "Character::IsTamed") &&
+             ContainsOperandText(wildlifeSweep, "ArenaWorldObjects::IsChallengeHost") &&
+             ContainsString(wildlifeSweep, "arenaguard.arena_id") &&
+             ContainsOperandText(wildlifeSweep, "DestroyProtectedWildlife"),
+            "The server wildlife sweep must remove passive characters and birds while preserving protected actors.");
+        True(runtime.Fields.Any(field => field.Name == "ProtectedWildlifeCharacters") &&
+             runtime.Fields.Any(field => field.Name == "ProtectedWildlifeBirds") &&
+             ContainsOperandText(RequireMethod(runtime, "TickOnMainThread"), "RemoveProtectedWildlife"),
+            "Protected wildlife cleanup must be low-frequency and reuse static buffers.");
 
         TypeDefinition ruleContext = RequireType(context.Mod, "ArenaGuard.Rules.ArenaRuleContext");
         MethodDefinition protectedDamage = RequireMethod(ruleContext, "IsProtectedDamage");
@@ -980,12 +1027,33 @@ internal static class Program
             "Client arrival detection must be throttled and reuse its cleanup buffer.");
 
         TypeDefinition core = RequireType(context.Mod, "ArenaGuard.World.ArenaCoreBehaviour");
+        MethodDefinition coreAwake = RequireMethod(core, "Awake");
+        MethodDefinition coreStart = RequireMethod(core, "Start");
+        True(ContainsOperandText(coreAwake, "Player::m_localPlayer") &&
+             ContainsOperandText(coreAwake, "ArenaCoreBehaviour::ApplyAdminVisibility") &&
+             ContainsOperandText(coreStart, "ArenaCoreBehaviour::ApplyAdminVisibility"),
+            "Core prefab templates must retain visible renderers until a local player exists, then enforce admin visibility at Start.");
+        MethodDefinition coreVisibility = RequireMethod(core, "ApplyAdminVisibility");
+        True(core.Fields.Any(field => field.FieldType is ArrayType array &&
+                                      array.ElementType.FullName == "LightFlicker") &&
+             core.Fields.Any(field => field.FieldType is ArrayType array &&
+                                      array.ElementType.FullName == "LightLod") &&
+             ContainsOperandText(coreVisibility, "Behaviour::set_enabled") &&
+             ContainsOperandText(coreVisibility, "Light::set_intensity") &&
+             ContainsOperandText(coreVisibility, "Light::set_range"),
+            "A hidden Core must disable its flicker/LOD controllers and perform no residual lighting work.");
         MethodDefinition applyRadiusRing = RequireMethod(core, "ApplyRadiusRing");
         True(!ContainsOperandText(applyRadiusRing, "MaterialPropertyBlock::.ctor") &&
              core.Fields.Count(field => field.FieldType.FullName == "UnityEngine.MaterialPropertyBlock") >= 2,
             "Arena Core radius rings must reuse cached material property blocks.");
 
         TypeDefinition marker = RequireType(context.Mod, "ArenaGuard.World.ArenaMarkerBehaviour");
+        MethodDefinition markerAwake = RequireMethod(marker, "Awake");
+        MethodDefinition markerStart = RequireMethod(marker, "Start");
+        True(ContainsOperandText(markerAwake, "Player::m_localPlayer") &&
+             ContainsOperandText(markerAwake, "ArenaMarkerBehaviour::ApplyAdminVisibility") &&
+             ContainsOperandText(markerStart, "ArenaMarkerBehaviour::ApplyAdminVisibility"),
+            "Marker prefab templates must not inherit a hidden first-preview state before local admin synchronization.");
         MethodDefinition markerVisibility = RequireMethod(marker, "ApplyAdminVisibility");
         True(!ContainsOperandText(markerVisibility, "MaterialPropertyBlock::.ctor") &&
              marker.Fields.Any(field => field.FieldType.FullName == "UnityEngine.MaterialPropertyBlock"),
@@ -1032,7 +1100,12 @@ internal static class Program
             ["ArenaEnemyDropListPatch"] = "CharacterDrop.GenerateDropList",
             ["ArenaEnemyDeathPatch"] = "Character.OnDeath",
             ["ArenaContainerPatch"] = "Container.Interact",
-            ["ArenaDoorPatch"] = "Door.Interact"
+            ["ArenaDoorPatch"] = "Door.Interact",
+            ["ArenaJogSpeedFactorPatch"] = "Player.GetJogSpeedFactor",
+            ["ArenaRunSpeedFactorPatch"] = "Player.GetRunSpeedFactor",
+            ["ProtectedNaturalSpawnPatch"] = "SpawnSystem.IsSpawnPointGood",
+            ["ProtectedCreatureSpawnerPatch"] = "CreatureSpawner.Spawn",
+            ["ProtectedSpawnAreaPatch"] = "SpawnArea.FindSpawnPoint"
         };
 
         foreach (var pair in expected)
@@ -1068,6 +1141,49 @@ internal static class Program
         RequireAttribute(worldDamagePatch, "HarmonyLib.HarmonyPatch");
         RequireMethod(worldDamagePatch, "TargetMethods");
         RequireMethod(worldDamagePatch, "Prefix");
+    }
+
+    private static void VerifyArenaMovementSpeedPolicy(TestContext context)
+    {
+        TypeDefinition policy = RequireType(context.Mod, "ArenaGuard.Rules.ArenaMovementSpeedPolicy");
+        RequireMethod(policy, "NormalizeJog");
+        RequireMethod(policy, "NormalizeRun");
+
+        TypeDefinition jogPatch = RequireType(context.Mod, "ArenaGuard.Rules.ArenaJogSpeedFactorPatch");
+        TypeDefinition runPatch = RequireType(context.Mod, "ArenaGuard.Rules.ArenaRunSpeedFactorPatch");
+        MethodDefinition jogPostfix = RequireMethod(jogPatch, "Postfix");
+        MethodDefinition runPostfix = RequireMethod(runPatch, "Postfix");
+        True(ContainsOperandText(jogPostfix, "ArenaRuleContext::IsProtectedPoint") &&
+             ContainsOperandText(jogPostfix, "Character::GetEquipmentMovementModifier") &&
+             ContainsOperandText(jogPostfix, "ArenaMovementSpeedPolicy::NormalizeJog"),
+            "Arena jog speed must be rebuilt from the protected-area state and equipment modifier.");
+        True(ContainsOperandText(runPostfix, "ArenaRuleContext::IsProtectedPoint") &&
+             ContainsOperandText(runPostfix, "Character::GetEquipmentMovementModifier") &&
+             ContainsOperandText(runPostfix, "Skills::GetSkillFactor") &&
+             ContainsOperandText(runPostfix, "ArenaMovementSpeedPolicy::NormalizeRun"),
+            "Arena run speed must preserve equipment and Run skill while discarding later bonuses.");
+        RequireAttribute(jogPatch, "HarmonyLib.HarmonyAfter");
+        RequireAttribute(runPatch, "HarmonyLib.HarmonyAfter");
+        RequireAttribute(jogPostfix, "HarmonyLib.HarmonyPriority");
+        RequireAttribute(runPostfix, "HarmonyLib.HarmonyPriority");
+
+        TypeDefinition compatibility = RequireType(context.Mod,
+            "ArenaGuard.Rules.SpeedyPathsCompatibility");
+        True(ConstantString(compatibility, "PluginGuid") == "nex.SpeedyPaths" &&
+             ContainsStringInType(compatibility, "SpeedyPaths.SpeedyPathsClientMod") &&
+             ContainsStringInType(compatibility, "GetSpeedyPathModifier"),
+            "Speedy Paths integration must remain optional and target its installed speed source exactly.");
+        True(ContainsOperandText(RequireMethod(compatibility, "NeutralizeSpeedModifier"),
+                 "ArenaRuleContext::IsProtectedPoint") &&
+             ContainsOperandText(RequireMethod(RequireType(context.Mod, "ArenaGuard.Plugin"), "Awake"),
+                 "SpeedyPathsCompatibility::TryInstall"),
+            "The optional Speedy Paths hook must install at startup and apply only inside protected arenas.");
+
+        TypeDefinition player = RequireType(context.Game, "Player");
+        True(player.Methods.Any(method => method.Name == "GetJogSpeedFactor" && method.Parameters.Count == 0) &&
+             player.Methods.Any(method => method.Name == "GetRunSpeedFactor" && method.Parameters.Count == 0) &&
+             player.Methods.Any(method => method.Name == "GetEquipmentMovementModifier" && method.Parameters.Count == 0),
+            "The installed Valheim Player API no longer exposes the movement-factor contract.");
     }
 
     private static void VerifyInstalledPatchTargets(TestContext context)
@@ -1110,6 +1226,12 @@ internal static class Program
             Member("Character", "OnDeath", 0),
             Member("Container", "Interact", 3),
             Member("Door", "Interact", 3),
+            Member("Player", "GetJogSpeedFactor", 0),
+            Member("Player", "GetRunSpeedFactor", 0),
+            Member("Player", "GetEquipmentMovementModifier", 0),
+            Member("SpawnSystem", "IsSpawnPointGood", 2),
+            Member("CreatureSpawner", "Spawn", 0),
+            Member("SpawnArea", "FindSpawnPoint", 2),
             Member("Attack", "ProjectileAttackTriggered", 0),
             Member("Attack", "DoNonAttack", 0),
             Member("Attack", "DoMeleeAttack", 0),
@@ -1162,7 +1284,7 @@ internal static class Program
 
         string[] unexpected = Directory.GetFiles(context.ModOutputDirectory, "*.dll")
             .Select(Path.GetFileName)
-            .Where(name => !string.Equals(name, "ArenaGuard.dll", StringComparison.OrdinalIgnoreCase))
+            .Where(name => !string.Equals(name, "SkaldHall.dll", StringComparison.OrdinalIgnoreCase))
             .ToArray();
         Equal(0, unexpected.Length);
     }
@@ -1388,7 +1510,7 @@ internal static class Program
             string root = FindRepositoryRoot();
             string valheimRoot = Environment.GetEnvironmentVariable("VALHEIM_ROOT") ?? @"C:\ValheimServer\server";
             string output = Path.Combine(root, "src", "ArenaGuard", "bin", "Release", "net472");
-            string modPath = Path.Combine(output, "ArenaGuard.dll");
+            string modPath = Path.Combine(output, "SkaldHall.dll");
             string gamePath = Path.Combine(valheimRoot, "valheim_server_Data", "Managed", "assembly_valheim.dll");
             string bepinexPath = Path.Combine(valheimRoot, "BepInEx", "core", "BepInEx.dll");
             string jotunnPath = Path.Combine(valheimRoot, "BepInEx", "plugins", "Jotunn.dll");
