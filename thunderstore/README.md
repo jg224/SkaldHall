@@ -2,7 +2,7 @@
 
 SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Its first release lets server administrators build protected challenge arenas where one player fights while everyone nearby watches as a harmless ghost spectator.
 
-## Available now: Arena Alpha
+## Available now: Arena Challenges
 
 - **Biome Ladder:** Fight every eligible monster in one selected biome or across the full Gauntlet, weakest to strongest.
 - **Star Ladder:** Fight the same scoped roster at base, one-star, and two-star difficulty.
@@ -46,7 +46,7 @@ SkaldHall is intended to grow beyond arenas:
 - additional activity NPCs and Hall roles;
 - contracts, special events, and other structured multiplayer activities.
 
-These systems are planned and are **not included in 0.0.2**.
+These systems are planned and are **not included in 0.0.3**.
 
 ## License
 
