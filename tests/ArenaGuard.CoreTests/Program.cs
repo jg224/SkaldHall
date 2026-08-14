@@ -22,15 +22,20 @@ internal static partial class Program
         Test("admin arena permissions are independent and fail closed", AdminArenaPermissionPolicy),
         Test("arena movement suppresses general bonuses but preserves equipment", ArenaMovementSpeedNormalization),
         Test("protected arenas exclude passive wildlife without removing protected actors", ProtectedWildlifePolicy),
+        Test("arena enemies cannot clear before network initialization", EnemyInitializationLifecycle),
+        Test("dedicated clients resolve arena combatants from snapshots", DedicatedClientCombatantIdentity),
+        Test("arena enemies maintain an authoritative combatant target", ArenaEnemyAggroTargeting),
         Test("food inventory snapshot remains immutable until restoration", FoodSnapshotIsPreserved),
         Test("queue is FIFO", QueueIsFifo),
         Test("queue acceptance timeout moves player to back", QueueAcceptanceTimeout),
         Test("replacement queue calls reopen their prompt", ReplacementQueueCallPrompt),
+        Test("queue acceptance opens food selection without relocating", QueueAcceptanceDoesNotRelocate),
         Test("staging timeout advances queue without a record", StagingTimeout),
         Test("secured staging teleports directly to Combat Start", CombatStartTeleportPolicy),
         Test("boundary grace can be cleared and later forfeits", BoundaryTimeout),
         Test("fight timer excludes preparation and results delays", FightTimerExcludesNonCombatTime),
         Test("displayed fight times use H:MM:SS", DisplayedFightTimeFormat),
+        Test("physical leaderboards split gauntlet and biome top fives", PhysicalLeaderboardBoardPolicy),
         Test("restart restores and retries immutable plan first", RestartRecovery),
         Test("restart requeues pre-combat sessions without a resource snapshot", RestartRecoveryBeforeResourceCapture),
         Test("lethal damage becomes a restored defeat", LethalDamage),
@@ -40,8 +45,8 @@ internal static partial class Program
         Test("mode announcements respect privacy", AnnouncementPolicy),
         Test("leaderboard application failure cannot block cleanup", LeaderboardEffectsAreIndependent),
         Test("spawn failure closes as runtime error", SpawnFailure),
+        Test("late spawn initialization failure closes as runtime error", LateSpawnInitializationFailure),
         Test("registry enforces normalized unique names", RegistryUniqueNames),
-        Test("registry routes many entrances to exact origin then fallback", RegistryReturnRouting),
         Test("registry queue snapshots preserve FIFO order", RegistryQueueOrdering),
         Test("marker beacons save incrementally and deletions survive reload", MarkerBeaconLifecycle),
         Test("combat start cannot be saved outside the combat radius", CombatStartRadiusInvariant),
@@ -49,6 +54,7 @@ internal static partial class Program
         Test("store round-trips pre-combat sessions without resource snapshots", StorePreCombatSessionRoundTrip),
         Test("store rotates five startup recovery backups", StoreRotatesStartupBackups),
         Test("store migrates legacy progression records to gauntlet scope", StoreMigratesLegacyProgression),
+        Test("store strips obsolete arena travel fields", StoreStripsLegacyTravelFields),
         Test("store rejects malformed and wrong-world files", StoreRejectsMalformedAndWrongWorld)
     };
 
@@ -157,6 +163,137 @@ internal static partial class Program
             "Arena-owned enemies must remain until session cleanup.");
         False(ArenaWildlifePolicy.ShouldRemoveCharacter(true, false, false, false, false, false),
             "Non-wildlife characters must not be removed by this policy.");
+    }
+
+    private static void PhysicalLeaderboardBoardPolicy()
+    {
+        Equal(ProgressionCapMode.Gauntlet,
+            ArenaLeaderboardBoardPolicy.CapMode(ArenaLeaderboardCategory.Gauntlet));
+        Equal(BiomeTier.BlackForest,
+            ArenaLeaderboardBoardPolicy.Biome(ArenaLeaderboardCategory.Gauntlet));
+        Equal(ProgressionCapMode.Biome,
+            ArenaLeaderboardBoardPolicy.CapMode(ArenaLeaderboardCategory.Mistlands));
+        Equal(BiomeTier.Mistlands,
+            ArenaLeaderboardBoardPolicy.Biome(ArenaLeaderboardCategory.Mistlands));
+        Equal("Black Forest", ArenaLeaderboardBoardPolicy.Label(ArenaLeaderboardCategory.BlackForest));
+        False(ArenaLeaderboardBoardPolicy.IsValidCategory((ArenaLeaderboardCategory)99),
+            "Unknown board categories must fail closed.");
+        Equal(7, ArenaLeaderboardBoardPolicy.DisplayOrder.Length);
+        Equal(ArenaLeaderboardCategory.BlackForest, ArenaLeaderboardBoardPolicy.DisplayOrder[0]);
+        Equal(ArenaLeaderboardCategory.Ashlands, ArenaLeaderboardBoardPolicy.DisplayOrder[5]);
+        Equal(ArenaLeaderboardCategory.Gauntlet, ArenaLeaderboardBoardPolicy.DisplayOrder[6]);
+        Equal("08-14 07:05", ArenaLeaderboardBoardPolicy.FormatCompactDate(new LeaderboardEntry
+        {
+            RecordedServerLocal = "2026-08-14 07:05"
+        }));
+
+        DateTime start = new DateTime(2026, 8, 14, 12, 0, 0, DateTimeKind.Utc);
+        var entries = new List<LeaderboardEntry>
+        {
+            BoardEntry(1, "One slower", true, 90000, start.AddMinutes(1)),
+            BoardEntry(1, "One best", true, 60000, start.AddMinutes(2)),
+            BoardEntry(2, "Incomplete", false, 1000, start),
+            BoardEntry(3, "Third", true, 70000, start.AddMinutes(3)),
+            BoardEntry(4, "Fourth", true, 80000, start.AddMinutes(4)),
+            BoardEntry(5, "Fifth", true, 85000, start.AddMinutes(5)),
+            BoardEntry(7, "Seventh", true, 90000, start.AddMinutes(6)),
+            BoardEntry(6, "Sixth", true, 95000, start.AddMinutes(6))
+        };
+        List<LeaderboardEntry> top = ArenaLeaderboardBoardPolicy.CompletedTopFive(entries);
+        Equal(5, top.Count);
+        Equal(1L, top[0].PlayerId);
+        Equal(3L, top[1].PlayerId);
+        True(top.All(entry => entry.Completed), "Physical boards must exclude unfinished attempts.");
+        False(top.Any(entry => entry.PlayerId == 2), "Incomplete players must not appear.");
+        False(top.Any(entry => entry.PlayerId == 6), "Only five completed players may appear.");
+        Equal("0:01:00", ArenaLeaderboardBoardPolicy.FormatDuration(top[0].ElapsedMilliseconds));
+        top[0].RecordedServerLocal = "Aug 14, 2026 07:02";
+        Equal("Aug 14, 2026 07:02", ArenaLeaderboardBoardPolicy.FormatDate(top[0]));
+    }
+
+    private static LeaderboardEntry BoardEntry(
+        long playerId,
+        string name,
+        bool completed,
+        long elapsed,
+        DateTime recordedUtc)
+    {
+        return new LeaderboardEntry
+        {
+            PlayerId = playerId,
+            PlayerName = name,
+            Completed = completed,
+            ElapsedMilliseconds = elapsed,
+            RecordedUtc = recordedUtc
+        };
+    }
+
+    private static void DedicatedClientCombatantIdentity()
+    {
+        const long authoritative = 2649319149L;
+        const long clientSnapshot = -893526296L;
+
+        Equal(authoritative,
+            ArenaCombatantIdentityPolicy.Resolve(authoritative, clientSnapshot, SessionPhase.Fighting));
+        Equal(clientSnapshot,
+            ArenaCombatantIdentityPolicy.Resolve(0L, clientSnapshot, SessionPhase.Fighting));
+        Equal(clientSnapshot,
+            ArenaCombatantIdentityPolicy.Resolve(0L, clientSnapshot, SessionPhase.Countdown));
+        Equal(0L,
+            ArenaCombatantIdentityPolicy.Resolve(0L, clientSnapshot, SessionPhase.Called));
+        Equal(0L,
+            ArenaCombatantIdentityPolicy.Resolve(0L, clientSnapshot, SessionPhase.Closed));
+    }
+
+    private static void ArenaEnemyAggroTargeting()
+    {
+        False(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                false, false, false, true, false, false),
+            "Aggression cannot be established until the combatant is available.");
+        True(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                false, true, true, false, true, true),
+            "Arena enemies must be reclaimed by the authoritative server owner.");
+        True(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                true, true, false, false, true, true),
+            "A lost or incorrect target must be replaced immediately.");
+        True(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                true, true, true, true, true, true),
+            "A sleeping arena enemy must be woken even when its target is retained.");
+        True(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                true, true, true, false, false, true),
+            "An arena enemy must stay alerted.");
+        True(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                true, true, true, false, true, false),
+            "An arena enemy must remain in hunt-player mode.");
+        False(ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                true, true, true, false, true, true),
+            "A fully secured combatant target needs no expensive reset.");
+
+        DateTime now = new DateTime(2026, 8, 13, 12, 0, 0, DateTimeKind.Utc);
+        Equal(now.AddMilliseconds(100), ArenaEnemyAggroPolicy.NextRefreshUtc(now, false));
+        Equal(now.AddMilliseconds(500), ArenaEnemyAggroPolicy.NextRefreshUtc(now, true));
+    }
+
+    private static void EnemyInitializationLifecycle()
+    {
+        Equal(ArenaEnemyLifecycleDecision.WaitingForInitialization,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, false, false, false, 0f, false, 0.05d, 0d));
+        Equal(ArenaEnemyLifecycleDecision.WaitingForInitialization,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, true, true, true, 100f, false, 0.10d, 0.10d));
+        Equal(ArenaEnemyLifecycleDecision.Alive,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, true, true, true, 100f, false, 0.30d, 0.25d));
+        Equal(ArenaEnemyLifecycleDecision.InitializationFailed,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, false, true, true, 0f, true, 0.09d, 0d));
+        Equal(ArenaEnemyLifecycleDecision.Defeated,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, true, true, true, 0f, true, 0.09d, 0.05d));
+        Equal(ArenaEnemyLifecycleDecision.InitializationFailed,
+            ArenaEnemyLifecyclePolicy.Evaluate(false, false, true, false, 0f, false, 10d, 0d));
+        Equal(ArenaEnemyLifecycleDecision.Alive,
+            ArenaEnemyLifecyclePolicy.Evaluate(true, false, true, false, 0f, false, 20d, 0d));
+        Equal(ArenaEnemyLifecycleDecision.Defeated,
+            ArenaEnemyLifecyclePolicy.Evaluate(true, false, true, true, 0f, false, 1d, 0d));
+        Equal(ArenaEnemyLifecycleDecision.Defeated,
+            ArenaEnemyLifecyclePolicy.Evaluate(true, false, false, false, 0f, false, 1d, 0d));
     }
 
     private static void ModeOneOrdersRoster()
@@ -785,6 +922,39 @@ internal static partial class Program
             ArenaEffectType.UpdateLeaderboard);
     }
 
+    private static void QueueAcceptanceDoesNotRelocate()
+    {
+        var fixture = new EngineFixture();
+        fixture.Enqueue(1);
+        fixture.Engine.DrainEffects();
+
+        True(fixture.Engine.AcceptTurn(1), "Called player should accept their turn.");
+        var effects = fixture.Engine.DrainEffects().ToList();
+
+        Equal(SessionPhase.Staging, fixture.Active().Phase);
+        False(effects.Any(effect => effect.Type == ArenaEffectType.MoveToStaging ||
+                                    effect.Type == ArenaEffectType.MoveToSpectatorArea),
+            "Accepting the queue must not relocate the player before food confirmation.");
+        True(effects.Any(effect => effect.Type == ArenaEffectType.SendLocalMessage &&
+                                   effect.Message.Contains("directly to Combat Start")),
+            "Acceptance should explain that confirmation owns the single start move.");
+    }
+
+    private static void LateSpawnInitializationFailure()
+    {
+        var fixture = new EngineFixture();
+        fixture.Start(1);
+        fixture.Engine.DrainEffects();
+        True(fixture.Engine.ReportEncounterSpawnFailure(fixture.SessionId),
+            "A fighting session must accept a late spawn-initialization failure.");
+        True(fixture.Engine.TryGetSession(fixture.SessionId, out ArenaSession session),
+            "The failed session should remain inspectable.");
+        Equal(SessionOutcome.RuntimeError, session.Outcome);
+        Equal(SessionPhase.Defeat, session.Phase);
+        True(fixture.Engine.DrainEffects().Any(effect => effect.Type == ArenaEffectType.DespawnSessionEnemies),
+            "A late spawn failure must schedule authoritative enemy cleanup.");
+    }
+
     private static KeyValuePair<string, Action> Test(string name, Action action)
     {
         return new KeyValuePair<string, Action>(name, action);
@@ -830,8 +1000,7 @@ internal static partial class Program
     {
         return new QueueEntry
         {
-            Request = Request(playerId, mode),
-            OriginGateId = "gate-" + playerId
+            Request = Request(playerId, mode)
         };
     }
 

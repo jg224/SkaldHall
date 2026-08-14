@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using ArenaGuard.Arenas;
@@ -27,11 +28,15 @@ namespace ArenaGuard.Runtime
         internal const string EnemyArenaZdoKey = "arenaguard.arena_id";
         internal const string EnemySessionZdoKey = "arenaguard.session_id";
         internal const string EnemyIdZdoKey = "arenaguard.enemy_id";
+        internal const string EnemyTagZdoKey = "arenaguard.enemy_tag";
+        private static readonly int EnemyTagZdoHash = EnemyTagZdoKey.GetStableHashCode();
 
         private static readonly MethodInfo MonsterAiWakeupMethod =
             AccessTools.Method(typeof(MonsterAI), "Wakeup", Type.EmptyTypes);
         private static readonly MethodInfo MonsterAiSetTargetMethod =
             AccessTools.Method(typeof(MonsterAI), "SetTarget", new[] { typeof(Character) });
+        private static readonly FieldInfo MonsterAiTargetCreatureField =
+            AccessTools.Field(typeof(MonsterAI), "m_targetCreature");
         private static readonly MethodInfo PlayerUpdateFoodMethod =
             AccessTools.Method(typeof(Player), "UpdateFood", new[] { typeof(float), typeof(bool) });
         private static readonly FieldInfo TerminalCheatField =
@@ -69,13 +74,20 @@ namespace ArenaGuard.Runtime
         private static readonly List<long> StaleCombatantIds = new List<long>();
         private static readonly List<Character> ProtectedWildlifeCharacters = new List<Character>();
         private static readonly List<RandomFlyingBird> ProtectedWildlifeBirds = new List<RandomFlyingBird>();
+        private static readonly HashSet<string> EncounterFailureSessions =
+            new HashSet<string>(StringComparer.Ordinal);
+        private static readonly List<Character> OrphanArenaCharacters = new List<Character>();
+        private static readonly Dictionary<string, PendingArenaCleanup> PendingArenaCleanups =
+            new Dictionary<string, PendingArenaCleanup>(StringComparer.Ordinal);
         private static readonly TimeSpan CombatBoundaryPopupInterval = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan ArenaCleanupDuration = TimeSpan.FromSeconds(15);
         private const float CombatStartArrivalRadius = 4f;
         private static bool _initialized;
         private static long _loadedWorldUid;
         private static DateTime _nextCollisionRefreshUtc;
         private static DateTime _nextStateBroadcastUtc;
         private static DateTime _nextProtectedWildlifeSweepUtc;
+        private static DateTime _nextOrphanEnemySweepUtc;
         private static float _nextClientCombatStartArrivalCheckTime;
         private static bool _clientAdminsMayModifyTerrain;
         private static bool _clientAdminsMayBuild;
@@ -234,9 +246,7 @@ namespace ArenaGuard.Runtime
             ArenaWorldObjects.CoreActivated = RequestStaleCoreCleanup;
             ArenaWorldObjects.AdminMarkerRequested = RequestMarkerMutation;
             ArenaWorldObjects.AdminMarkerRemovalRequested = RequestMarkerRemoval;
-            ArenaTeleporters.GateTravelRequested = (_, gateId, returning) =>
-                ArenaRpc.RequestGateTravel(gateId, returning);
-            ArenaTeleporters.GateConfigurationRequested = RequestGateConfiguration;
+            ArenaWorldObjects.LeaderboardRequested = ArenaRpc.RequestLeaderboard;
 
             ArenaUi.ChallengeRequested = ArenaRpc.RequestChallenge;
             ArenaUi.QueueAccepted = ArenaRpc.AcceptQueueCall;
@@ -256,9 +266,6 @@ namespace ArenaGuard.Runtime
                 LethalDamageReported = OnLethalDamageReported,
                 CombatStartArrived = OnCombatStartArrived,
                 AdminMutationRequested = OnAdminMutationRequested,
-                GateTravelAuthorizing = OnGateTravelAuthorizing,
-                GateTravelCompleted = OnGateTravelCompleted,
-                ClientGateTravelAuthorized = OnClientGateTravelAuthorized,
                 ResourceSnapshotReceived = OnResourceSnapshotReceived,
                 ClientResourceRestoreRequested = OnClientResourceRestoreRequested,
                 ResourceRestoreCompleted = OnResourceRestoreCompleted,
@@ -267,11 +274,6 @@ namespace ArenaGuard.Runtime
                 LeaderboardRequested = GetCurrentRosterLeaderboard,
                 ClientSnapshotReceived = OnClientSnapshotReceived,
                 ClientArenaRemoved = OnClientArenaRemoved,
-                ClientGateConfigurationReceived = gate => ArenaTeleporters.ApplyGateConfiguration(
-                    gate.GateId,
-                    gate.ArenaId,
-                    gate.DisplayName,
-                    gate.IsFallbackEntrance),
                 ClientLeaderboardReceived = OnClientLeaderboardReceived,
                 ClientActionResultReceived = OnClientActionResultReceived,
                 ServerPeerConnected = _ => BroadcastAllArenaStates()
@@ -293,8 +295,12 @@ namespace ArenaGuard.Runtime
             }
 
             _loadedWorldUid = worldUid;
+            ArenaLeaderboardBoardBehaviour.ResetClientState();
             Roles.Clear();
             Enemies.Clear();
+            EncounterFailureSessions.Clear();
+            OrphanArenaCharacters.Clear();
+            PendingArenaCleanups.Clear();
             LastSpawnMarkerBySessionId.Clear();
             ResourceSnapshots.Clear();
             PendingRestores.Clear();
@@ -314,6 +320,7 @@ namespace ArenaGuard.Runtime
             AwaitingCombatStartIds.Clear();
             StaleCombatantIds.Clear();
             _nextClientCombatStartArrivalCheckTime = 0f;
+            _nextOrphanEnemySweepUtc = DateTime.MinValue;
 
             if (!ZNet.instance.IsServer())
             {
@@ -348,13 +355,9 @@ namespace ArenaGuard.Runtime
                         "Combat Start is outside the combat radius. An admin must move it inside the blue ring.");
                 }
 
-                string originGateId = ArenaRegistry.TryGetRoute(context.PlayerId, out PlayerArenaRoute route)
-                    ? route.OriginGateId
-                    : string.Empty;
                 _engine.Enqueue(new QueueEntry
                 {
                     Request = request,
-                    OriginGateId = originGateId,
                     EnqueuedUtc = DateTime.UtcNow
                 });
                 ProcessEngineEffects();
@@ -473,10 +476,6 @@ namespace ArenaGuard.Runtime
                         {
                             return ArenaRpcResult.Rejected("Finish the active challenge and empty its queue before removing the arena.");
                         }
-                        if (ArenaRegistry.GetRouteSnapshot().Any(route => route.ArenaId == removalArenaId))
-                        {
-                            return ArenaRpcResult.Rejected("Return all arena visitors before removing the arena.");
-                        }
                         changed = ArenaRegistry.RemoveArena(removalArenaId);
                         if (changed)
                         {
@@ -557,31 +556,6 @@ namespace ArenaGuard.Runtime
                             arenaId,
                             removedMarkerKind,
                             mutation.MarkerSlot);
-                        break;
-                    case ArenaAdminMutationKind.RegisterGate:
-                        ArenaGateDefinition gate = mutation.Gate;
-                        if (gate == null || !Near(context.Position, gate.Position, 12f))
-                        {
-                            return ArenaRpcResult.Rejected("Stand near the Arena Gate to configure it.");
-                        }
-                        if (ArenaRegistry.GetGatesForArena(gate.ArenaId).Count == 0)
-                        {
-                            gate.IsFallbackEntrance = true;
-                        }
-                        changed = ArenaRegistry.RegisterGate(gate);
-                        arenaId = gate.ArenaId;
-                        if (changed)
-                        {
-                            foreach (ArenaGateDefinition configuredGate in ArenaRegistry.GetGatesForArena(gate.ArenaId))
-                            {
-                                ArenaRpc.BroadcastGateConfiguration(configuredGate);
-                            }
-                        }
-                        break;
-                    case ArenaAdminMutationKind.RemoveGate:
-                        ArenaRegistry.TryGetGate(mutation.TargetId, out ArenaGateDefinition removedGate);
-                        changed = ArenaRegistry.RemoveGate(mutation.TargetId);
-                        arenaId = removedGate?.ArenaId;
                         break;
                     case ArenaAdminMutationKind.SetAdminTerrainPermission:
                         ArenaConfig.AllowAdminTerrainEditing.Value = mutation.Enabled;
@@ -747,75 +721,6 @@ namespace ArenaGuard.Runtime
             return arena != null;
         }
 
-        private static ArenaRpcResult OnGateTravelAuthorizing(
-            ArenaRequestContext context,
-            ArenaGateDefinition gate,
-            bool returning)
-        {
-            if (returning)
-            {
-                return ArenaRpcResult.Accepted();
-            }
-
-            bool recorded = ArenaRegistry.RecordRoute(new PlayerArenaRoute
-            {
-                PlayerId = context.PlayerId,
-                ArenaId = gate.ArenaId,
-                OriginGateId = gate.GateId,
-                EnteredUtc = DateTime.UtcNow
-            });
-            if (!recorded || !SaveWorldState())
-            {
-                ArenaRegistry.ClearRoute(context.PlayerId);
-                return ArenaRpcResult.Rejected("The arena route could not be saved.");
-            }
-            return ArenaRpcResult.Accepted();
-        }
-
-        private static ArenaRpcResult OnGateTravelCompleted(
-            ArenaRequestContext context,
-            ArenaGateTravelAuthorization authorization,
-            bool accepted)
-        {
-            if (!accepted)
-            {
-                if (!authorization.Returning)
-                {
-                    ArenaRegistry.ClearRoute(context.PlayerId);
-                    SaveWorldState();
-                }
-                return ArenaRpcResult.Rejected("Arena travel was cancelled.");
-            }
-
-            if (authorization.Returning)
-            {
-                _engine?.Disconnect(context.PlayerId);
-                ProcessEngineEffects();
-                ArenaRegistry.ClearRoute(context.PlayerId);
-                SetRole(context.PlayerId, ArenaRole.Visitor);
-            }
-            else
-            {
-                SetRole(context.PlayerId, ArenaRole.Spectator);
-            }
-
-            SaveWorldState();
-            ArenaRpc.BroadcastArenaState(authorization.ArenaId);
-            return ArenaRpcResult.Accepted();
-        }
-
-        private static bool OnClientGateTravelAuthorized(ArenaGateTravelAuthorization authorization)
-        {
-            bool accepted = authorization != null &&
-                ArenaTeleporters.ApplyAuthorizedGateTravel(authorization.Destination, authorization.RotationY);
-            if (accepted && Player.m_localPlayer != null)
-            {
-                SetRole(Player.m_localPlayer.GetPlayerID(),
-                    authorization.Returning ? ArenaRole.Visitor : ArenaRole.Spectator);
-            }
-            return accepted;
-        }
-
         private static ArenaRpcResult OnResourceSnapshotReceived(
             ArenaRequestContext context,
             PlayerResourceSnapshot snapshot)
@@ -944,10 +849,7 @@ namespace ArenaGuard.Runtime
                 bool isCalledForLocal = snapshot.CombatantPlayerId == playerId &&
                                         snapshot.Phase == SessionPhase.Called;
                 bool isCombatant = snapshot.CombatantPlayerId == playerId &&
-                                   (snapshot.Phase == SessionPhase.Staging ||
-                                    snapshot.Phase == SessionPhase.Countdown ||
-                                    snapshot.Phase == SessionPhase.Fighting ||
-                                    snapshot.Phase == SessionPhase.Intermission);
+                                   ArenaCombatantIdentityPolicy.IsCombatantPhase(snapshot.Phase);
                 RecomputeClientRole();
 
                 ClientQueuePromptSessions.TryGetValue(snapshot.ArenaId, out string displayedSessionId);
@@ -1043,10 +945,7 @@ namespace ArenaGuard.Runtime
             long playerId = local.GetPlayerID();
             IEnumerable<ArenaClientSnapshot> snapshots = ClientArenaSnapshots.Values;
             bool combatant = snapshots.Any(candidate => candidate.CombatantPlayerId == playerId &&
-                (candidate.Phase == SessionPhase.Staging ||
-                 candidate.Phase == SessionPhase.Countdown ||
-                 candidate.Phase == SessionPhase.Fighting ||
-                 candidate.Phase == SessionPhase.Intermission));
+                ArenaCombatantIdentityPolicy.IsCombatantPhase(candidate.Phase));
             if (combatant)
             {
                 SetRole(playerId, ArenaRole.Combatant);
@@ -1150,15 +1049,26 @@ namespace ArenaGuard.Runtime
             LeaderboardKey key,
             List<LeaderboardEntry> entries)
         {
-            ArenaUi.ReceiveLeaderboard(key, entries ?? new List<LeaderboardEntry>());
+            List<LeaderboardEntry> received = entries ?? new List<LeaderboardEntry>();
+            ArenaUi.ReceiveLeaderboard(key, received);
+            ArenaLeaderboardBoardBehaviour.ReceiveLeaderboard(key, received);
         }
 
         private static List<LeaderboardEntry> GetCurrentRosterLeaderboard(LeaderboardKey key)
         {
             long revision = _catalog?.RosterRevision ?? 0L;
-            return ArenaStore.GetLeaderboard(key)
+            List<LeaderboardEntry> entries = ArenaStore.GetLeaderboard(key)
                 .Where(entry => entry != null && entry.RosterRevision == revision)
                 .ToList();
+            foreach (LeaderboardEntry entry in entries)
+            {
+                DateTime utc = entry.RecordedUtc.Kind == DateTimeKind.Utc
+                    ? entry.RecordedUtc
+                    : entry.RecordedUtc.ToUniversalTime();
+                entry.RecordedServerLocal = utc.ToLocalTime()
+                    .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            }
+            return entries;
         }
 
         private static void OnClientActionResultReceived(bool success, string message)
@@ -1198,32 +1108,9 @@ namespace ArenaGuard.Runtime
                     });
                     ArenaWorldObjects.SelectAdminArena(placement.ObjectId);
                     break;
-                case ArenaWorldObjectKind.EntranceGate:
-                    if (string.IsNullOrWhiteSpace(placement.ArenaId))
-                    {
-                        return;
-                    }
-                    ArenaRpc.RequestAdminMutation(new ArenaAdminMutation
-                    {
-                        Kind = ArenaAdminMutationKind.RegisterGate,
-                        Gate = new ArenaGateDefinition
-                        {
-                            GateId = placement.ObjectId,
-                            ArenaId = placement.ArenaId,
-                            DisplayName = "Arena Gate " + ShortId(placement.ObjectId),
-                            Position = placement.Position,
-                            RotationY = placement.RotationY,
-                            IsFallbackEntrance = false
-                        }
-                    });
-                    break;
-                case ArenaWorldObjectKind.HubGate:
-                    RequestMarkerMutation(placement.ArenaId, ArenaMarkerKind.HubGate, placement.Position, -1);
-                    break;
                 case ArenaWorldObjectKind.StagingMarker:
                 case ArenaWorldObjectKind.CombatantStartMarker:
                 case ArenaWorldObjectKind.EnemySpawnMarker:
-                case ArenaWorldObjectKind.HubGateMarker:
                     // ArenaMarkerBehaviour reports these once with their precise marker kind.
                     break;
             }
@@ -1354,35 +1241,6 @@ namespace ArenaGuard.Runtime
                 MarkerKind = (int)kind,
                 MarkerSlot = slot,
                 MarkerPosition = position
-            });
-        }
-
-        private static void RequestGateConfiguration(
-            string objectId,
-            string arenaId,
-            string displayName,
-            bool isFallback)
-        {
-            ArenaGateBehaviour behaviour = UnityEngine.Object
-                .FindObjectsByType<ArenaGateBehaviour>(FindObjectsInactive.Exclude, FindObjectsSortMode.None)
-                .FirstOrDefault(candidate => candidate != null && candidate.ObjectId == objectId);
-            if (behaviour == null || behaviour.IsHubGate)
-            {
-                return;
-            }
-
-            ArenaRpc.RequestAdminMutation(new ArenaAdminMutation
-            {
-                Kind = ArenaAdminMutationKind.RegisterGate,
-                Gate = new ArenaGateDefinition
-                {
-                    GateId = objectId,
-                    ArenaId = arenaId,
-                    DisplayName = displayName,
-                    Position = ToPositionData(behaviour.transform.position),
-                    RotationY = behaviour.transform.eulerAngles.y,
-                    IsFallbackEntrance = isFallback
-                }
             });
         }
 
@@ -1525,10 +1383,9 @@ namespace ArenaGuard.Runtime
                         continue;
                     }
 
-                    // Accepting a queue call may already be teleporting the player
-                    // to the Arena Master. Valheim rejects a second TeleportTo while
-                    // that move is active, so retry at a controlled rate and keep the
-                    // session in staging until the server observes the destination.
+                    // The food confirmation owns the only start relocation. Retry
+                    // that server-selected Combat Start destination at a controlled
+                    // rate until the server observes arrival.
                     DateTime now = DateTime.UtcNow;
                     if (!CombatStartMoveRetryUtc.TryGetValue(playerId, out DateTime retryUtc) || now >= retryUtc)
                     {
@@ -1628,23 +1485,94 @@ namespace ArenaGuard.Runtime
 
         private static void ReconcileArenaEnemies()
         {
+            DateTime now = DateTime.UtcNow;
             var affectedSessions = new HashSet<string>(StringComparer.Ordinal);
             foreach (ArenaEnemyHandle handle in Enemies.Values.ToList())
             {
-                if (handle.Character != null && !handle.Character.IsDead() && handle.Character.GetHealth() > 0f)
+                ZDO zdo = ResolveEnemyZdo(handle);
+                bool networkRecordExists = zdo != null && zdo.IsValid();
+                float health = 0f;
+                bool healthValueKnown = networkRecordExists && zdo.GetFloat(ZDOVars.s_health, out health);
+                if (networkRecordExists && healthValueKnown && health > 0f)
+                {
+                    if (!handle.PositiveHealthObserved)
+                    {
+                        handle.PositiveHealthObserved = true;
+                        handle.PositiveHealthObservedUtc = now;
+                    }
+                }
+
+                double stableHealthSeconds = handle.PositiveHealthObserved
+                    ? (now - handle.PositiveHealthObservedUtc).TotalSeconds
+                    : 0d;
+                ArenaEnemyLifecycleDecision decision = ArenaEnemyLifecyclePolicy.Evaluate(
+                    handle.InitializationConfirmed,
+                    handle.PositiveHealthObserved,
+                    networkRecordExists,
+                    healthValueKnown,
+                    health,
+                    handle.DeathCallbackObserved,
+                    (now - handle.SpawnedUtc).TotalSeconds,
+                    stableHealthSeconds);
+
+                MaintainArenaEnemyAggro(handle, now);
+
+                if (decision == ArenaEnemyLifecycleDecision.Alive)
+                {
+                    if (!handle.InitializationConfirmed)
+                    {
+                        handle.InitializationConfirmed = true;
+                        Plugin.Log?.LogInfo("Arena enemy ready: session=" + handle.SessionId +
+                                            ", enemy=" + handle.EnemyId + ".");
+                    }
+                    continue;
+                }
+                if (decision == ArenaEnemyLifecycleDecision.WaitingForInitialization)
                 {
                     continue;
                 }
+                if (decision == ArenaEnemyLifecycleDecision.InitializationFailed)
+                {
+                    Plugin.Log?.LogError("Arena enemy failed to initialize: session=" + handle.SessionId +
+                                         ", enemy=" + handle.EnemyId + ". The challenge will stop safely.");
+                    EncounterFailureSessions.Add(handle.SessionId);
+                }
+
                 Enemies.Remove(handle.EnemyId);
                 affectedSessions.Add(handle.SessionId);
             }
             foreach (string sessionId in affectedSessions)
             {
-                if (!Enemies.Values.Any(handle => string.Equals(handle.SessionId, sessionId, StringComparison.Ordinal)))
+                if (EncounterFailureSessions.Remove(sessionId))
                 {
-                    _engine.ReportEncounterCleared(sessionId);
+                    if (_engine.ReportEncounterSpawnFailure(sessionId))
+                    {
+                        Plugin.Log?.LogError("Arena session " + sessionId +
+                                             " stopped because its encounter did not initialize.");
+                    }
+                    continue;
+                }
+
+                if (Enemies.Values.Any(handle => string.Equals(handle.SessionId, sessionId, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                if (_engine.ReportEncounterCleared(sessionId))
+                {
+                    Plugin.Log?.LogInfo("Arena encounter cleared after all initialized enemies were defeated: session=" +
+                                        sessionId + ".");
                 }
             }
+        }
+
+        private static ZDO ResolveEnemyZdo(ArenaEnemyHandle handle)
+        {
+            if (handle == null || handle.NetworkId == ZDOID.None || ZDOMan.instance == null)
+            {
+                return null;
+            }
+            return ZDOMan.instance.GetZDO(handle.NetworkId);
         }
 
         private static void ProcessEngineEffects()
@@ -1667,8 +1595,30 @@ namespace ArenaGuard.Runtime
                 stateChanged = true;
                 foreach (ArenaEffect effect in effects)
                 {
-                    bool succeeded = ApplyEngineEffect(effect);
-                    _engine.ApplyEffectResult(effect, succeeded);
+                    bool succeeded;
+                    try
+                    {
+                        succeeded = ApplyEngineEffect(effect);
+                    }
+                    catch (Exception error)
+                    {
+                        succeeded = false;
+                        Plugin.Log?.LogError("Arena effect failed safely: type=" + effect.Type +
+                                             ", arena=" + (effect.ArenaId ?? string.Empty) +
+                                             ", session=" + (effect.SessionId ?? string.Empty) +
+                                             ". " + error);
+                    }
+
+                    try
+                    {
+                        _engine.ApplyEffectResult(effect, succeeded);
+                    }
+                    catch (Exception error)
+                    {
+                        Plugin.Log?.LogError("Arena engine rejected an effect result: type=" + effect.Type +
+                                             ", session=" + (effect.SessionId ?? string.Empty) +
+                                             ". " + error);
+                    }
                 }
             }
 
@@ -1855,7 +1805,7 @@ namespace ArenaGuard.Runtime
             }
 
             LeaderboardKey key = BuildLeaderboardKey(session);
-            return ArenaStore.RecordResult(new LeaderboardEntry
+            bool changed = ArenaStore.RecordResult(new LeaderboardEntry
             {
                 Key = key,
                 PlayerId = session.Request.PlayerId,
@@ -1866,6 +1816,11 @@ namespace ArenaGuard.Runtime
                 RosterRevision = session.Plan.RosterRevision,
                 RecordedUtc = DateTime.UtcNow
             });
+            if (changed)
+            {
+                ArenaRpc.BroadcastLeaderboard(key);
+            }
+            return changed;
         }
 
         private static LeaderboardKey BuildLeaderboardKey(ArenaSession session)
@@ -2107,6 +2062,11 @@ namespace ArenaGuard.Runtime
                     _nextProtectedWildlifeSweepUtc = now.AddSeconds(1);
                     RemoveProtectedWildlife();
                 }
+                if (now >= _nextOrphanEnemySweepUtc)
+                {
+                    _nextOrphanEnemySweepUtc = now.AddSeconds(1);
+                    SweepOrphanArenaEnemies(now);
+                }
 
             }
 
@@ -2199,6 +2159,7 @@ namespace ArenaGuard.Runtime
 
                     string enemyId = Guid.NewGuid().ToString("D").ToLowerInvariant();
                     character.SetLevel((int)encounter.Stars + 1);
+                    character.SetHealth(character.GetMaxHealth());
                     CharacterDrop drop = spawned.GetComponent<CharacterDrop>();
                     drop?.SetDropsEnabled(false);
 
@@ -2206,6 +2167,7 @@ namespace ArenaGuard.Runtime
                     zdo.Set(EnemyArenaZdoKey, session.ArenaId);
                     zdo.Set(EnemySessionZdoKey, session.SessionId);
                     zdo.Set(EnemyIdZdoKey, enemyId);
+                    zdo.Set(EnemyTagZdoKey, 1);
 
                     Enemies[enemyId] = new ArenaEnemyHandle
                     {
@@ -2213,12 +2175,18 @@ namespace ArenaGuard.Runtime
                         ArenaId = session.ArenaId,
                         SessionId = session.SessionId,
                         Character = character,
+                        NetworkId = zdo.m_uid,
+                        SpawnedUtc = DateTime.UtcNow,
+                        PositiveHealthObserved = character.GetHealth() > 0f,
+                        PositiveHealthObservedUtc = DateTime.UtcNow,
                         SpawnPosition = position,
-                        SpawnMarkerIndex = markerIndex
+                        SpawnMarkerIndex = markerIndex,
+                        CombatantPlayerId = session.Request?.PlayerId ?? 0L,
+                        NextAggroRefreshUtc = DateTime.UtcNow
                     };
                     unitEnemyIds.Add(enemyId);
                     ArenaRuleContext.CacheEnemyArenaId(character, session.ArenaId);
-                    AggroArenaEnemy(character, session.Request?.PlayerId ?? 0L);
+                    MaintainArenaEnemyAggro(Enemies[enemyId], DateTime.UtcNow);
                 }
 
                 if (!completeUnit)
@@ -2328,6 +2296,129 @@ namespace ArenaGuard.Runtime
             UnityEngine.Object.Destroy(wildlife);
         }
 
+        private static void SweepOrphanArenaEnemies(DateTime now)
+        {
+            if (ZDOMan.instance == null)
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<string, PendingArenaCleanup> pair in PendingArenaCleanups.ToList())
+            {
+                if (pair.Value.ExpiresUtc <= now)
+                {
+                    PendingArenaCleanups.Remove(pair.Key);
+                }
+            }
+
+            OrphanArenaCharacters.Clear();
+            foreach (Character character in Character.GetAllCharacters())
+            {
+                if (character == null)
+                {
+                    continue;
+                }
+
+                string sessionId = ReadZdo(character, EnemySessionZdoKey);
+                if (!string.IsNullOrWhiteSpace(sessionId) && !IsActiveEnemySession(sessionId))
+                {
+                    OrphanArenaCharacters.Add(character);
+                }
+            }
+            foreach (Character character in OrphanArenaCharacters)
+            {
+                Plugin.Log?.LogWarning("Removing orphaned arena creature " + character.name + ".");
+                DestroyArenaCharacter(character);
+            }
+
+            foreach (PendingArenaCleanup cleanup in PendingArenaCleanups.Values)
+            {
+                DestroyTaggedEnemyZdos(cleanup.SessionId, cleanup.ArenaId);
+            }
+
+            // Integer tag indexing lets the dedicated server remove arena ZDOs
+            // even after their local Character object unloaded or never reached
+            // Character.Start. This also clears leftovers after a server restart.
+            foreach (ZDOID id in ZDOExtraData.GetAllZDOIDsWithHash(
+                         ZDOExtraData.Type.Int, EnemyTagZdoHash).ToList())
+            {
+                ZDO zdo = ZDOMan.instance.GetZDO(id);
+                if (zdo == null || zdo.GetInt(EnemyTagZdoKey, 0) != 1)
+                {
+                    continue;
+                }
+
+                string sessionId = zdo.GetString(EnemySessionZdoKey, string.Empty);
+                if (!IsActiveEnemySession(sessionId))
+                {
+                    DestroyArenaZdo(zdo);
+                }
+            }
+        }
+
+        private static bool IsActiveEnemySession(string sessionId)
+        {
+            return !string.IsNullOrWhiteSpace(sessionId) && _engine != null &&
+                   _engine.TryGetSession(sessionId, out ArenaSession session) &&
+                   session.Phase == SessionPhase.Fighting &&
+                   _engine.TryGetActiveSession(session.ArenaId, out ArenaSession active) &&
+                   string.Equals(active.SessionId, sessionId, StringComparison.Ordinal);
+        }
+
+        private static void DestroyTaggedEnemyZdos(string sessionId, string arenaId)
+        {
+            if (ZDOMan.instance == null || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return;
+            }
+
+            foreach (ZDOID id in ZDOExtraData.GetAllZDOIDsWithHash(
+                         ZDOExtraData.Type.Int, EnemyTagZdoHash).ToList())
+            {
+                ZDO zdo = ZDOMan.instance.GetZDO(id);
+                if (zdo == null || zdo.GetInt(EnemyTagZdoKey, 0) != 1 ||
+                    !string.Equals(zdo.GetString(EnemySessionZdoKey, string.Empty),
+                        sessionId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(arenaId) &&
+                    !string.Equals(zdo.GetString(EnemyArenaZdoKey, string.Empty),
+                        arenaId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                DestroyArenaZdo(zdo);
+            }
+        }
+
+        private static void DestroyArenaZdo(ZDO zdo)
+        {
+            if (zdo == null || ZDOMan.instance == null)
+            {
+                return;
+            }
+
+            ZNetView instance = ZNetScene.instance?.FindInstance(zdo);
+            if (instance != null)
+            {
+                Character character = instance.GetComponent<Character>();
+                if (character != null)
+                {
+                    DestroyArenaCharacter(character);
+                }
+                else
+                {
+                    ZNetScene.instance.Destroy(instance.gameObject);
+                }
+                return;
+            }
+
+            zdo.SetOwner(ZDOMan.GetSessionID());
+            ZDOMan.instance.DestroyZDO(zdo);
+        }
+
         private static void DespawnSessionEnemies(string sessionId, string arenaId)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
@@ -2335,6 +2426,13 @@ namespace ArenaGuard.Runtime
                 return;
             }
             LastSpawnMarkerBySessionId.Remove(sessionId);
+            EncounterFailureSessions.Remove(sessionId);
+            PendingArenaCleanups[sessionId] = new PendingArenaCleanup
+            {
+                SessionId = sessionId,
+                ArenaId = arenaId ?? string.Empty,
+                ExpiresUtc = DateTime.UtcNow.Add(ArenaCleanupDuration)
+            };
 
             var characters = new HashSet<Character>();
             foreach (ArenaEnemyHandle handle in Enemies.Values
@@ -2387,6 +2485,7 @@ namespace ArenaGuard.Runtime
             {
                 DestroyArenaCharacter(character);
             }
+            DestroyTaggedEnemyZdos(sessionId, arenaId);
         }
 
         internal static bool MoveToStaging(long playerId)
@@ -2715,35 +2814,81 @@ namespace ArenaGuard.Runtime
                     handle.SpawnMarkerIndex = markerIndex;
                     if (ArenaRegistry.TryGetActiveSession(handle.ArenaId, out ArenaSession active))
                     {
-                        AggroArenaEnemy(character, active.Request?.PlayerId ?? 0L);
+                        handle.CombatantPlayerId = active.Request?.PlayerId ?? handle.CombatantPlayerId;
+                        handle.NextAggroRefreshUtc = DateTime.MinValue;
+                        MaintainArenaEnemyAggro(handle, DateTime.UtcNow);
                     }
                 }
             }
         }
 
-        private static void AggroArenaEnemy(Character enemy, long combatantPlayerId)
+        private static void MaintainArenaEnemyAggro(ArenaEnemyHandle handle, DateTime nowUtc)
         {
-            MonsterAI monsterAi = enemy?.GetBaseAI() as MonsterAI;
-            if (monsterAi == null)
+            if (handle == null || handle.Character == null || nowUtc < handle.NextAggroRefreshUtc)
             {
                 return;
             }
 
+            bool targetConfirmed = AggroArenaEnemy(handle.Character, handle.CombatantPlayerId);
+            handle.NextAggroRefreshUtc = ArenaEnemyAggroPolicy.NextRefreshUtc(nowUtc, targetConfirmed);
+            if (targetConfirmed && !handle.AggroConfirmed)
+            {
+                handle.AggroConfirmed = true;
+                Plugin.Log?.LogInfo("Arena enemy target locked: session=" + handle.SessionId +
+                                    ", enemy=" + handle.EnemyId +
+                                    ", combatant=" + handle.CombatantPlayerId + ".");
+            }
+        }
+
+        private static bool AggroArenaEnemy(Character enemy, long combatantPlayerId)
+        {
+            MonsterAI monsterAi = enemy?.GetBaseAI() as MonsterAI;
+            ZNetView view = enemy?.GetComponent<ZNetView>();
+            if (monsterAi == null || view == null || !view.IsValid())
+            {
+                return false;
+            }
+
             try
             {
+                TryResolvePlayerState(combatantPlayerId, out Player combatant, out _, out _);
+                bool targetMatches = combatant != null && monsterAi.GetTargetCreature() == combatant;
+                bool shouldReassert = ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                    view.IsOwner(),
+                    combatant != null,
+                    targetMatches,
+                    monsterAi.IsSleeping(),
+                    monsterAi.IsAlerted(),
+                    monsterAi.HuntPlayer());
+                if (!shouldReassert)
+                {
+                    return targetMatches;
+                }
+
+                // Arena enemies remain server-owned so their target cannot be
+                // delayed or replaced by a client owner's ordinary AI sensing.
+                view.ClaimOwnership();
                 MonsterAiWakeupMethod?.Invoke(monsterAi, null);
                 monsterAi.SetHuntPlayer(true);
                 monsterAi.Alert();
-                TryResolvePlayerState(combatantPlayerId, out Player combatant, out _, out _);
-                if (combatant != null)
+
+                if (monsterAi.GetTargetCreature() != combatant)
                 {
+                    MonsterAiTargetCreatureField?.SetValue(monsterAi, null);
                     MonsterAiSetTargetMethod?.Invoke(monsterAi, new object[] { combatant });
                 }
+
+                return view.IsOwner() &&
+                       monsterAi.GetTargetCreature() == combatant &&
+                       !monsterAi.IsSleeping() &&
+                       monsterAi.IsAlerted() &&
+                       monsterAi.HuntPlayer();
             }
             catch (Exception exception)
             {
                 Plugin.Log?.LogWarning("Could not immediately aggro arena enemy " + enemy.name +
                                        " on combatant " + combatantPlayerId + ": " + exception.Message);
+                return false;
             }
         }
 
@@ -2772,6 +2917,9 @@ namespace ArenaGuard.Runtime
                 DestroyEnemy(handle);
             }
             Enemies.Clear();
+            EncounterFailureSessions.Clear();
+            OrphanArenaCharacters.Clear();
+            PendingArenaCleanups.Clear();
             LastSpawnMarkerBySessionId.Clear();
             Roles.Clear();
             ResourceSnapshots.Clear();
@@ -2792,6 +2940,7 @@ namespace ArenaGuard.Runtime
             AwaitingCombatStartIds.Clear();
             StaleCombatantIds.Clear();
             _nextClientCombatStartArrivalCheckTime = 0f;
+            _nextOrphanEnemySweepUtc = DateTime.MinValue;
             ArenaRpc.Shutdown();
             ArenaUi.CloseArenaUi();
             ArenaWorldObjects.PlacementRequested = null;
@@ -2799,10 +2948,9 @@ namespace ArenaGuard.Runtime
             ArenaWorldObjects.CoreActivated = null;
             ArenaWorldObjects.AdminMarkerRequested = null;
             ArenaWorldObjects.AdminMarkerRemovalRequested = null;
+            ArenaWorldObjects.LeaderboardRequested = null;
             ArenaWorldObjects.ArenaAtPositionResolver = null;
             ArenaWorldObjects.ArenaDefinitionResolver = null;
-            ArenaTeleporters.GateTravelRequested = null;
-            ArenaTeleporters.GateConfigurationRequested = null;
             ArenaUi.ChallengeRequested = null;
             ArenaUi.QueueAccepted = null;
             ArenaUi.ForfeitRequested = null;
@@ -2845,16 +2993,15 @@ namespace ArenaGuard.Runtime
             string enemyId = ReadZdo(character, EnemyIdZdoKey);
             string sessionId = ReadZdo(character, EnemySessionZdoKey);
             ArenaRuleContext.ForgetEnemy(character);
-            if (!string.IsNullOrEmpty(enemyId))
+            if (!string.IsNullOrEmpty(enemyId) && Enemies.TryGetValue(enemyId, out ArenaEnemyHandle handle))
             {
-                Enemies.Remove(enemyId);
+                handle.DeathCallbackObserved = true;
+                handle.Character = character;
+                return;
             }
-            if (!string.IsNullOrEmpty(sessionId) &&
-                !Enemies.Values.Any(handle => string.Equals(handle.SessionId, sessionId, StringComparison.Ordinal)))
-            {
-                _engine?.ReportEncounterCleared(sessionId);
-                ProcessEngineEffects();
-            }
+
+            Plugin.Log?.LogWarning("Ignored an arena enemy death without a tracked lifecycle: enemy=" +
+                                   (enemyId ?? string.Empty) + ", session=" + (sessionId ?? string.Empty) + ".");
         }
 
         private static void RegisterArenaSummon(Character owner, GameObject spawned)
@@ -2894,24 +3041,32 @@ namespace ArenaGuard.Runtime
             if (string.IsNullOrWhiteSpace(enemyId))
             {
                 enemyId = Guid.NewGuid().ToString("D").ToLowerInvariant();
-                zdo.Set(EnemyArenaZdoKey, arenaId);
-                zdo.Set(EnemySessionZdoKey, sessionId);
                 zdo.Set(EnemyIdZdoKey, enemyId);
             }
+            zdo.Set(EnemyArenaZdoKey, arenaId);
+            zdo.Set(EnemySessionZdoKey, sessionId);
+            zdo.Set(EnemyTagZdoKey, 1);
 
             CharacterDrop drop = summoned.GetComponent<CharacterDrop>();
             drop?.SetDropsEnabled(false);
+            summoned.SetHealth(summoned.GetMaxHealth());
             Enemies[enemyId] = new ArenaEnemyHandle
             {
                 EnemyId = enemyId,
                 ArenaId = arenaId,
                 SessionId = sessionId,
                 Character = summoned,
+                NetworkId = zdo.m_uid,
+                SpawnedUtc = DateTime.UtcNow,
+                PositiveHealthObserved = summoned.GetHealth() > 0f,
+                PositiveHealthObservedUtc = DateTime.UtcNow,
                 SpawnPosition = summoned.transform.position,
-                SpawnMarkerIndex = -1
+                SpawnMarkerIndex = -1,
+                CombatantPlayerId = active.Request?.PlayerId ?? 0L,
+                NextAggroRefreshUtc = DateTime.UtcNow
             };
             ArenaRuleContext.CacheEnemyArenaId(summoned, arenaId);
-            AggroArenaEnemy(summoned, active.Request?.PlayerId ?? 0L);
+            MaintainArenaEnemyAggro(Enemies[enemyId], DateTime.UtcNow);
             Plugin.Debug("Registered arena summon " + summoned.name + " for session " + sessionId + ".");
         }
 
@@ -2922,9 +3077,15 @@ namespace ArenaGuard.Runtime
 
         private static long ResolveCombatant(string arenaId)
         {
-            return ArenaRegistry.TryGetActiveSession(arenaId, out ArenaSession session) && session.Request != null
-                ? session.Request.PlayerId
-                : 0L;
+            long authoritativePlayerId =
+                ArenaRegistry.TryGetActiveSession(arenaId, out ArenaSession session) && session.Request != null
+                    ? session.Request.PlayerId
+                    : 0L;
+            ClientArenaSnapshots.TryGetValue(arenaId ?? string.Empty, out ArenaClientSnapshot snapshot);
+            return ArenaCombatantIdentityPolicy.Resolve(
+                authoritativePlayerId,
+                snapshot?.CombatantPlayerId ?? 0L,
+                snapshot?.Phase ?? SessionPhase.Closed);
         }
 
         private static bool MovePlayerToArenaMarker(long playerId, Func<ArenaDefinition, PositionData?> marker)
@@ -3058,7 +3219,12 @@ namespace ArenaGuard.Runtime
         private static void DestroyEnemy(ArenaEnemyHandle handle)
         {
             Enemies.Remove(handle.EnemyId);
-            DestroyArenaCharacter(handle.Character);
+            if (handle.Character != null)
+            {
+                DestroyArenaCharacter(handle.Character);
+                return;
+            }
+            DestroyArenaZdo(ResolveEnemyZdo(handle));
         }
 
         private static void DestroyArenaCharacter(Character character)
@@ -3282,7 +3448,6 @@ namespace ArenaGuard.Runtime
             {
                 StagingPosition = source.StagingPosition,
                 CombatantStartPosition = source.CombatantStartPosition,
-                HubGatePosition = source.HubGatePosition,
                 EnemySpawnPositions = source.EnemySpawnPositions == null
                     ? new List<PositionData>()
                     : new List<PositionData>(source.EnemySpawnPositions)
@@ -3297,8 +3462,7 @@ namespace ArenaGuard.Runtime
                 return false;
             }
             if (!SamePosition(first.StagingPosition, second.StagingPosition) ||
-                !SamePosition(first.CombatantStartPosition, second.CombatantStartPosition) ||
-                !SamePosition(first.HubGatePosition, second.HubGatePosition))
+                !SamePosition(first.CombatantStartPosition, second.CombatantStartPosition))
             {
                 return false;
             }
@@ -3325,8 +3489,24 @@ namespace ArenaGuard.Runtime
             internal string ArenaId;
             internal string SessionId;
             internal Character Character;
+            internal ZDOID NetworkId;
+            internal DateTime SpawnedUtc;
+            internal DateTime PositiveHealthObservedUtc;
+            internal bool PositiveHealthObserved;
+            internal bool InitializationConfirmed;
+            internal bool DeathCallbackObserved;
             internal Vector3 SpawnPosition;
             internal int SpawnMarkerIndex;
+            internal long CombatantPlayerId;
+            internal DateTime NextAggroRefreshUtc;
+            internal bool AggroConfirmed;
+        }
+
+        private sealed class PendingArenaCleanup
+        {
+            internal string SessionId;
+            internal string ArenaId;
+            internal DateTime ExpiresUtc;
         }
 
         private sealed class PendingRestore

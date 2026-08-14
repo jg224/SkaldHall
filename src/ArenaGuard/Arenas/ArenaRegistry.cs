@@ -16,12 +16,6 @@ namespace ArenaGuard.Arenas
             new Dictionary<string, ArenaDefinition>(StringComparer.Ordinal);
         private static readonly Dictionary<string, string> ArenaNames =
             new Dictionary<string, string>(StringComparer.Ordinal);
-        private static readonly Dictionary<string, ArenaGateDefinition> Gates =
-            new Dictionary<string, ArenaGateDefinition>(StringComparer.Ordinal);
-        private static readonly Dictionary<string, string> GateNames =
-            new Dictionary<string, string>(StringComparer.Ordinal);
-        private static readonly Dictionary<long, PlayerArenaRoute> Routes =
-            new Dictionary<long, PlayerArenaRoute>();
         private static readonly Dictionary<string, List<QueueEntry>> Queues =
             new Dictionary<string, List<QueueEntry>>(StringComparer.Ordinal);
         private static readonly Dictionary<string, ArenaSession> ActiveSessions =
@@ -65,21 +59,6 @@ namespace ArenaGuard.Arenas
                 if (!Arenas.TryGetValue(arenaId, out ArenaDefinition arena)) return false;
                 Arenas.Remove(arenaId);
                 ArenaNames.Remove(arena.NormalizedName);
-
-                foreach (string gateId in Gates.Values
-                    .Where(gate => string.Equals(gate.ArenaId, arenaId, StringComparison.Ordinal))
-                    .Select(gate => gate.GateId)
-                    .ToList())
-                {
-                    GateNames.Remove(Gates[gateId].NormalizedName);
-                    Gates.Remove(gateId);
-                }
-
-                foreach (long playerId in Routes.Values
-                    .Where(route => string.Equals(route.ArenaId, arenaId, StringComparison.Ordinal))
-                    .Select(route => route.PlayerId)
-                    .ToList())
-                    Routes.Remove(playerId);
 
                 Queues.Remove(arenaId);
                 ActiveSessions.Remove(arenaId);
@@ -177,10 +156,6 @@ namespace ArenaGuard.Arenas
                         existing = markers.CombatantStartPosition;
                         markers.CombatantStartPosition = position;
                         break;
-                    case ArenaMarkerKind.HubGate:
-                        existing = markers.HubGatePosition;
-                        markers.HubGatePosition = position;
-                        break;
                     case ArenaMarkerKind.EnemySpawn:
                         existing = markers.EnemySpawnPositions[slot];
                         markers.EnemySpawnPositions[slot] = position;
@@ -194,7 +169,7 @@ namespace ArenaGuard.Arenas
                 arena.Markers = markers;
                 // Marker edits are configuration changes. An administrator must
                 // explicitly re-enable the arena after confirming the new layout.
-                if (kind != ArenaMarkerKind.HubGate) arena.Enabled = false;
+                arena.Enabled = false;
                 arena.Revision = Math.Max(1L, arena.Revision + 1L);
                 return true;
             }
@@ -221,10 +196,6 @@ namespace ArenaGuard.Arenas
                         existing = markers.CombatantStartPosition;
                         markers.CombatantStartPosition = unset;
                         break;
-                    case ArenaMarkerKind.HubGate:
-                        existing = markers.HubGatePosition;
-                        markers.HubGatePosition = unset;
-                        break;
                     case ArenaMarkerKind.EnemySpawn:
                         existing = markers.EnemySpawnPositions[slot];
                         markers.EnemySpawnPositions[slot] = unset;
@@ -236,7 +207,7 @@ namespace ArenaGuard.Arenas
                 if (IsUnsetMarker(existing)) return true;
 
                 arena.Markers = markers;
-                if (kind != ArenaMarkerKind.HubGate) arena.Enabled = false;
+                arena.Enabled = false;
                 arena.Revision = Math.Max(1L, arena.Revision + 1L);
                 return true;
             }
@@ -282,9 +253,6 @@ namespace ArenaGuard.Arenas
                     case ArenaMarkerKind.CombatantStart:
                         position = markers.CombatantStartPosition;
                         break;
-                    case ArenaMarkerKind.HubGate:
-                        position = markers.HubGatePosition;
-                        break;
                     case ArenaMarkerKind.EnemySpawn:
                         position = markers.EnemySpawnPositions[slot];
                         break;
@@ -317,142 +285,6 @@ namespace ArenaGuard.Arenas
             };
         }
 
-        internal static bool RegisterGate(ArenaGateDefinition definition)
-        {
-            ArenaGateDefinition candidate = NormalizeAndCopyGate(definition);
-            lock (Sync)
-            {
-                if (!Arenas.ContainsKey(candidate.ArenaId)) return false;
-                if (GateNames.TryGetValue(candidate.NormalizedName, out string namedGateId) &&
-                    !string.Equals(namedGateId, candidate.GateId, StringComparison.Ordinal))
-                    return false;
-
-                if (Gates.TryGetValue(candidate.GateId, out ArenaGateDefinition existing))
-                    GateNames.Remove(existing.NormalizedName);
-
-                // Exactly one fallback is retained per arena. Setting a new one clears the old flag.
-                if (candidate.IsFallbackEntrance)
-                {
-                    foreach (ArenaGateDefinition gate in Gates.Values.Where(gate =>
-                        string.Equals(gate.ArenaId, candidate.ArenaId, StringComparison.Ordinal)))
-                        gate.IsFallbackEntrance = false;
-                }
-
-                Gates[candidate.GateId] = candidate;
-                GateNames[candidate.NormalizedName] = candidate.GateId;
-                return true;
-            }
-        }
-
-        internal static bool RemoveGate(string gateId)
-        {
-            gateId = NormalizeId(gateId);
-            if (gateId == null) return false;
-            lock (Sync)
-            {
-                if (!Gates.TryGetValue(gateId, out ArenaGateDefinition gate)) return false;
-                Gates.Remove(gateId);
-                GateNames.Remove(gate.NormalizedName);
-                return true;
-            }
-        }
-
-        internal static bool TryGetGate(string gateId, out ArenaGateDefinition definition)
-        {
-            gateId = NormalizeId(gateId);
-            lock (Sync)
-            {
-                if (gateId != null && Gates.TryGetValue(gateId, out ArenaGateDefinition stored))
-                {
-                    definition = CopyGate(stored);
-                    return true;
-                }
-            }
-
-            definition = null;
-            return false;
-        }
-
-        internal static bool TryGetGateByName(string displayName, out ArenaGateDefinition definition)
-        {
-            string normalizedName = NormalizeName(displayName);
-            lock (Sync)
-            {
-                if (normalizedName != null && GateNames.TryGetValue(normalizedName, out string gateId) &&
-                    Gates.TryGetValue(gateId, out ArenaGateDefinition stored))
-                {
-                    definition = CopyGate(stored);
-                    return true;
-                }
-            }
-
-            definition = null;
-            return false;
-        }
-
-        internal static bool RecordRoute(PlayerArenaRoute route)
-        {
-            if (route == null || route.PlayerId <= 0) return false;
-            string arenaId = NormalizeId(route.ArenaId);
-            string gateId = NormalizeId(route.OriginGateId);
-            if (arenaId == null || gateId == null) return false;
-
-            lock (Sync)
-            {
-                if (!Arenas.ContainsKey(arenaId) || !Gates.TryGetValue(gateId, out ArenaGateDefinition gate) ||
-                    !string.Equals(gate.ArenaId, arenaId, StringComparison.Ordinal))
-                    return false;
-
-                Routes[route.PlayerId] = new PlayerArenaRoute
-                {
-                    PlayerId = route.PlayerId,
-                    ArenaId = arenaId,
-                    OriginGateId = gateId,
-                    EnteredUtc = AsUtc(route.EnteredUtc == default(DateTime) ? DateTime.UtcNow : route.EnteredUtc)
-                };
-                return true;
-            }
-        }
-
-        internal static ArenaGateDefinition ResolveReturnGate(long playerId)
-        {
-            if (playerId <= 0) return null;
-            lock (Sync)
-            {
-                if (!Routes.TryGetValue(playerId, out PlayerArenaRoute route)) return null;
-                if (Gates.TryGetValue(route.OriginGateId, out ArenaGateDefinition origin) &&
-                    string.Equals(origin.ArenaId, route.ArenaId, StringComparison.Ordinal))
-                    return CopyGate(origin);
-
-                ArenaGateDefinition fallback = Gates.Values
-                    .Where(gate => string.Equals(gate.ArenaId, route.ArenaId, StringComparison.Ordinal) &&
-                                   gate.IsFallbackEntrance)
-                    .OrderBy(gate => gate.NormalizedName, StringComparer.Ordinal)
-                    .ThenBy(gate => gate.GateId, StringComparer.Ordinal)
-                    .FirstOrDefault();
-                return fallback == null ? null : CopyGate(fallback);
-            }
-        }
-
-        internal static bool ClearRoute(long playerId)
-        {
-            lock (Sync) return Routes.Remove(playerId);
-        }
-
-        internal static bool TryGetRoute(long playerId, out PlayerArenaRoute route)
-        {
-            lock (Sync)
-            {
-                if (playerId > 0 && Routes.TryGetValue(playerId, out PlayerArenaRoute stored))
-                {
-                    route = CopyRoute(stored);
-                    return true;
-                }
-            }
-            route = null;
-            return false;
-        }
-
         internal static void ReplaceQueue(IEnumerable<QueueEntry> entries)
         {
             lock (Sync)
@@ -466,7 +298,7 @@ namespace ArenaGuard.Arenas
                     .ThenBy(entry => entry.EnqueuedUtc))
                 {
                     string arenaId = NormalizeId(entry.Request.ArenaId);
-                    if (!Arenas.ContainsKey(arenaId) || !QueueOriginIsValid(entry, arenaId)) continue;
+                    if (!Arenas.ContainsKey(arenaId)) continue;
                     if (!Queues.TryGetValue(arenaId, out List<QueueEntry> queue))
                         Queues[arenaId] = queue = new List<QueueEntry>();
                     if (queue.Any(current => current.Request.PlayerId == entry.Request.PlayerId)) continue;
@@ -549,38 +381,12 @@ namespace ArenaGuard.Arenas
                     .Select(CopyArena).ToList();
         }
 
-        internal static List<ArenaGateDefinition> GetGateSnapshot()
-        {
-            lock (Sync)
-                return Gates.Values.OrderBy(gate => gate.NormalizedName, StringComparer.Ordinal)
-                    .Select(CopyGate).ToList();
-        }
-
-        internal static List<ArenaGateDefinition> GetGatesForArena(string arenaId)
-        {
-            arenaId = NormalizeId(arenaId);
-            lock (Sync)
-            {
-                if (arenaId == null) return new List<ArenaGateDefinition>();
-                return Gates.Values.Where(gate => string.Equals(gate.ArenaId, arenaId, StringComparison.Ordinal))
-                    .OrderBy(gate => gate.NormalizedName, StringComparer.Ordinal).Select(CopyGate).ToList();
-            }
-        }
-
-        internal static List<PlayerArenaRoute> GetRouteSnapshot()
-        {
-            lock (Sync) return Routes.Values.OrderBy(route => route.PlayerId).Select(CopyRoute).ToList();
-        }
-
         internal static void Replace(PersistedWorldState state)
         {
             lock (Sync)
             {
                 Arenas.Clear();
                 ArenaNames.Clear();
-                Gates.Clear();
-                GateNames.Clear();
-                Routes.Clear();
                 Queues.Clear();
                 ActiveSessions.Clear();
 
@@ -595,29 +401,13 @@ namespace ArenaGuard.Arenas
                     Queues.Add(arena.ArenaId, new List<QueueEntry>());
                 }
 
-                foreach (ArenaGateDefinition raw in state.Gates ?? new List<ArenaGateDefinition>())
-                {
-                    ArenaGateDefinition gate = NormalizeAndCopyGate(raw);
-                    if (!Arenas.ContainsKey(gate.ArenaId) || Gates.ContainsKey(gate.GateId) ||
-                        GateNames.ContainsKey(gate.NormalizedName))
-                        throw new InvalidOperationException("Saved gates must target an arena and have unique IDs and names.");
-                    Gates.Add(gate.GateId, gate);
-                    GateNames.Add(gate.NormalizedName, gate.GateId);
-                }
-
-                foreach (PlayerArenaRoute raw in state.Routes ?? new List<PlayerArenaRoute>())
-                {
-                    if (!RecordRouteWhileLocked(raw))
-                        throw new InvalidOperationException("Saved player route does not target a valid arena entrance.");
-                }
-
                 foreach (QueueEntry raw in (state.Queue ?? new List<QueueEntry>())
                     .OrderBy(entry => entry.QueueSequence).ThenBy(entry => entry.EnqueuedUtc))
                 {
                     if (!IsValidQueueEntry(raw)) throw new InvalidOperationException("Saved queue contains an invalid entry.");
                     string arenaId = NormalizeId(raw.Request.ArenaId);
-                    if (!Arenas.ContainsKey(arenaId) || !QueueOriginIsValid(raw, arenaId))
-                        throw new InvalidOperationException("Saved queue targets an unknown arena or entrance.");
+                    if (!Arenas.ContainsKey(arenaId))
+                        throw new InvalidOperationException("Saved queue targets an unknown arena.");
                     List<QueueEntry> queue = Queues[arenaId];
                     if (queue.Any(entry => entry.Request.PlayerId == raw.Request.PlayerId))
                         throw new InvalidOperationException("A player occurs more than once in an arena queue.");
@@ -642,9 +432,6 @@ namespace ArenaGuard.Arenas
                     RosterRevision = rosterRevision,
                     Arenas = Arenas.Values.OrderBy(arena => arena.NormalizedName, StringComparer.Ordinal)
                         .Select(CopyArena).ToList(),
-                    Gates = Gates.Values.OrderBy(gate => gate.NormalizedName, StringComparer.Ordinal)
-                        .Select(CopyGate).ToList(),
-                    Routes = Routes.Values.OrderBy(route => route.PlayerId).Select(CopyRoute).ToList(),
                     Queue = Queues.Values.SelectMany(queue => queue).OrderBy(entry => entry.QueueSequence)
                         .ThenBy(entry => entry.EnqueuedUtc).Select(CopyQueueEntry).ToList(),
                     InterruptedSessions = (interruptedSessions ?? Enumerable.Empty<ArenaSession>())
@@ -659,7 +446,7 @@ namespace ArenaGuard.Arenas
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
             string trimmed = value.Trim();
-            if (trimmed.Length > 64) throw new ArgumentException("Arena and gate names are limited to 64 characters.");
+            if (trimmed.Length > 64) throw new ArgumentException("Arena names are limited to 64 characters.");
             return trimmed.ToLowerInvariant();
         }
 
@@ -704,7 +491,7 @@ namespace ArenaGuard.Arenas
             if (validateEnabled && source.Enabled && !MarkersAreComplete(source.Markers))
                 throw new ArgumentException("The arena cannot be enabled. Missing: " +
                                             string.Join(", ", MissingRequiredMarkers(source.Markers)) +
-                                            ". Gates are optional.", nameof(source));
+                                            ".", nameof(source));
 
             return new ArenaDefinition
             {
@@ -717,27 +504,6 @@ namespace ArenaGuard.Arenas
                 Markers = CopyMarkers(source.Markers),
                 Enabled = source.Enabled,
                 Revision = source.Revision
-            };
-        }
-
-        private static ArenaGateDefinition NormalizeAndCopyGate(ArenaGateDefinition source)
-        {
-            if (source == null) throw new ArgumentNullException(nameof(source));
-            string gateId = RequireId(source.GateId, nameof(source.GateId));
-            string arenaId = RequireId(source.ArenaId, nameof(source.ArenaId));
-            string normalizedName = NormalizeName(source.DisplayName);
-            if (normalizedName == null) throw new ArgumentException("Gate name is required.", nameof(source));
-            if (!IsFinite(source.Position) || !IsFinite(source.RotationY))
-                throw new ArgumentException("Gate position and rotation must be finite.", nameof(source));
-            return new ArenaGateDefinition
-            {
-                GateId = gateId,
-                ArenaId = arenaId,
-                DisplayName = source.DisplayName.Trim(),
-                NormalizedName = normalizedName,
-                Position = source.Position,
-                RotationY = source.RotationY,
-                IsFallbackEntrance = source.IsFallbackEntrance
             };
         }
 
@@ -771,7 +537,6 @@ namespace ArenaGuard.Arenas
             {
                 StagingPosition = source == null ? unset : source.StagingPosition,
                 CombatantStartPosition = source == null ? unset : source.CombatantStartPosition,
-                HubGatePosition = source == null ? unset : source.HubGatePosition,
                 EnemySpawnPositions = source?.EnemySpawnPositions == null
                     ? new List<PositionData>()
                     : new List<PositionData>(source.EnemySpawnPositions)
@@ -784,7 +549,7 @@ namespace ArenaGuard.Arenas
 
         private static bool MarkerSlotIsValid(ArenaMarkerKind kind, int slot)
         {
-            return kind >= ArenaMarkerKind.Staging && kind <= ArenaMarkerKind.HubGate &&
+            return kind >= ArenaMarkerKind.Staging && kind <= ArenaMarkerKind.EnemySpawn &&
                    (kind == ArenaMarkerKind.EnemySpawn ? slot >= 0 && slot < 4 : slot == -1);
         }
 
@@ -830,33 +595,6 @@ namespace ArenaGuard.Arenas
                    entry.QueueSequence >= 0;
         }
 
-        private static bool QueueOriginIsValid(QueueEntry entry, string arenaId)
-        {
-            if (string.IsNullOrWhiteSpace(entry.OriginGateId)) return true;
-            string gateId = NormalizeId(entry.OriginGateId);
-            if (gateId == null) return false;
-            return !Gates.TryGetValue(gateId, out ArenaGateDefinition gate) ||
-                   string.Equals(gate.ArenaId, arenaId, StringComparison.Ordinal);
-        }
-
-        private static bool RecordRouteWhileLocked(PlayerArenaRoute route)
-        {
-            if (route == null || route.PlayerId <= 0) return false;
-            string arenaId = NormalizeId(route.ArenaId);
-            string gateId = NormalizeId(route.OriginGateId);
-            if (arenaId == null || gateId == null || !Arenas.ContainsKey(arenaId)) return false;
-            if (Gates.TryGetValue(gateId, out ArenaGateDefinition gate) &&
-                !string.Equals(gate.ArenaId, arenaId, StringComparison.Ordinal)) return false;
-            Routes[route.PlayerId] = new PlayerArenaRoute
-            {
-                PlayerId = route.PlayerId,
-                ArenaId = arenaId,
-                OriginGateId = gateId,
-                EnteredUtc = AsUtc(route.EnteredUtc)
-            };
-            return true;
-        }
-
         private static DateTime AsUtc(DateTime value)
         {
             if (value == default(DateTime)) return DateTime.SpecifyKind(value, DateTimeKind.Utc);
@@ -887,36 +625,9 @@ namespace ArenaGuard.Arenas
             {
                 StagingPosition = source.StagingPosition,
                 CombatantStartPosition = source.CombatantStartPosition,
-                HubGatePosition = source.HubGatePosition,
                 EnemySpawnPositions = source.EnemySpawnPositions == null
                     ? new List<PositionData>()
                     : new List<PositionData>(source.EnemySpawnPositions)
-            };
-        }
-
-        private static ArenaGateDefinition CopyGate(ArenaGateDefinition source)
-        {
-            if (source == null) return null;
-            return new ArenaGateDefinition
-            {
-                GateId = source.GateId,
-                ArenaId = source.ArenaId,
-                DisplayName = source.DisplayName,
-                NormalizedName = source.NormalizedName,
-                Position = source.Position,
-                RotationY = source.RotationY,
-                IsFallbackEntrance = source.IsFallbackEntrance
-            };
-        }
-
-        private static PlayerArenaRoute CopyRoute(PlayerArenaRoute source)
-        {
-            return source == null ? null : new PlayerArenaRoute
-            {
-                PlayerId = source.PlayerId,
-                ArenaId = source.ArenaId,
-                OriginGateId = source.OriginGateId,
-                EnteredUtc = source.EnteredUtc
             };
         }
 
@@ -926,7 +637,6 @@ namespace ArenaGuard.Arenas
             return new QueueEntry
             {
                 Request = CopyRequest(source.Request),
-                OriginGateId = source.OriginGateId,
                 QueueSequence = source.QueueSequence,
                 EnqueuedUtc = source.EnqueuedUtc
             };

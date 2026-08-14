@@ -638,6 +638,94 @@ namespace ArenaGuard.Rules
         }
     }
 
+    /// <summary>
+    /// Valheim randomizes a new MonsterAI's first target scan between zero and
+    /// two seconds. Run on whichever peer currently owns the AI and remove that
+    /// delay before UpdateAI executes. ArenaEnemyTargetPatch then restricts the
+    /// immediate search to the authenticated combatant.
+    /// </summary>
+    [HarmonyPatch(typeof(MonsterAI), nameof(MonsterAI.UpdateAI))]
+    internal static class ArenaEnemyImmediateAggroPatch
+    {
+        private static readonly FieldInfo UpdateTargetTimerField =
+            AccessTools.Field(typeof(MonsterAI), "m_updateTargetTimer");
+        private static readonly FieldInfo TargetCreatureField =
+            AccessTools.Field(typeof(MonsterAI), "m_targetCreature");
+        private static readonly MethodInfo WakeupMethod =
+            AccessTools.Method(typeof(MonsterAI), "Wakeup", Type.EmptyTypes);
+        private static readonly MethodInfo SetTargetMethod =
+            AccessTools.Method(typeof(MonsterAI), "SetTarget", new[] { typeof(Character) });
+
+        [HarmonyPrefix]
+        private static void Prefix(MonsterAI __instance)
+        {
+            if (__instance == null)
+            {
+                return;
+            }
+
+            ZNetView view = __instance.GetComponent<ZNetView>();
+            Character enemy = __instance.GetComponent<Character>();
+            if (view == null || !view.IsValid() || !view.IsOwner() || enemy == null)
+            {
+                return;
+            }
+
+            string arenaId = ArenaRuleContext.GetEnemyArenaId(enemy);
+            long combatantPlayerId = ArenaRuleContext.GetCombatantId(arenaId);
+            if (string.IsNullOrEmpty(arenaId) || combatantPlayerId == 0L)
+            {
+                return;
+            }
+
+            Character currentTarget = __instance.GetTargetCreature();
+            bool targetMatches = currentTarget is Player player &&
+                                 player.GetPlayerID() == combatantPlayerId;
+            if (!ArenaEnemyAggroPolicy.ShouldReassertTarget(
+                    true,
+                    true,
+                    targetMatches,
+                    __instance.IsSleeping(),
+                    __instance.IsAlerted(),
+                    __instance.HuntPlayer()))
+            {
+                return;
+            }
+
+            WakeupMethod?.Invoke(__instance, null);
+            __instance.SetHuntPlayer(true);
+            __instance.Alert();
+            if (!targetMatches)
+            {
+                Player combatant = FindCombatant(combatantPlayerId);
+                TargetCreatureField?.SetValue(__instance, null);
+                if (combatant != null)
+                {
+                    // Direct assignment primes last-known position and clears
+                    // any static target before the first UpdateAI body runs.
+                    SetTargetMethod?.Invoke(__instance, new object[] { combatant });
+                }
+                // Keep the vanilla search primed as a same-frame fallback if
+                // the replicated Player object was not available yet.
+                UpdateTargetTimerField?.SetValue(__instance, 0f);
+            }
+        }
+
+        private static Player FindCombatant(long playerId)
+        {
+            IList<Player> players = Player.GetAllPlayers();
+            for (int index = 0; index < players.Count; index++)
+            {
+                Player player = players[index];
+                if (player != null && player.GetPlayerID() == playerId)
+                {
+                    return player;
+                }
+            }
+            return null;
+        }
+    }
+
     [HarmonyPatch(typeof(CharacterDrop), nameof(CharacterDrop.GenerateDropList))]
     internal static class ArenaEnemyDropListPatch
     {

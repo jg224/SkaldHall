@@ -30,8 +30,6 @@ namespace ArenaGuard.Sessions
         private readonly Dictionary<long, DateTime> _boundaryDeadlines = new Dictionary<long, DateTime>();
         private readonly Dictionary<string, ChallengePlan> _recoveredPlansByRequestId =
             new Dictionary<string, ChallengePlan>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> _originGateBySessionId =
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<ArenaEffect> _effects = new List<ArenaEffect>();
         private int _nextQueueSequence = 1;
 
@@ -89,9 +87,8 @@ namespace ArenaGuard.Sessions
             session.PhaseDeadlineUtc = now.Add(_options.StagingTimeout);
             Emit(ArenaEffectType.SetArenaRole, session, null, ArenaRole.Combatant.ToString());
             Emit(ArenaEffectType.PersistState, session, null, "Queue turn accepted.");
-            Emit(ArenaEffectType.MoveToStaging, session, null, "Move called combatant to staging.");
             Emit(ArenaEffectType.SendLocalMessage, session, null,
-                "Preparing your combat teleport. The arena will start when your loadout is secured.");
+                "Choose your arena food. You will move directly to Combat Start after confirming.");
             return true;
         }
 
@@ -248,6 +245,20 @@ namespace ArenaGuard.Sessions
             return true;
         }
 
+        public bool ReportEncounterSpawnFailure(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) ||
+                !_sessionsById.TryGetValue(sessionId, out ArenaSession session) ||
+                session.Phase != SessionPhase.Fighting || !IsActive(session))
+            {
+                return false;
+            }
+
+            EndRun(session, SessionOutcome.RuntimeError, SessionPhase.Defeat, Now(),
+                "could not start an arena encounter because a spawned creature did not initialize.", true);
+            return true;
+        }
+
         public bool ReportBoundaryState(long playerId, bool isOutside)
         {
             var session = FindActiveByPlayer(playerId);
@@ -385,7 +396,6 @@ namespace ArenaGuard.Sessions
             _sessionsById.Clear();
             _boundaryDeadlines.Clear();
             _recoveredPlansByRequestId.Clear();
-            _originGateBySessionId.Clear();
             _effects.Clear();
             _nextQueueSequence = 1;
 
@@ -425,7 +435,6 @@ namespace ArenaGuard.Sessions
                 _queue.Add(new QueueEntry
                 {
                     Request = CloneRequest(oldSession.Request),
-                    OriginGateId = string.Empty,
                     QueueSequence = _nextQueueSequence++,
                     EnqueuedUtc = Now()
                 });
@@ -608,7 +617,6 @@ namespace ArenaGuard.Sessions
 
                 _activeByArena[arenaId] = session;
                 _sessionsById[session.SessionId] = session;
-                _originGateBySessionId[session.SessionId] = entry.OriginGateId ?? string.Empty;
                 Emit(ArenaEffectType.CallQueuedPlayer, session, null,
                     "Your arena turn is ready. Accept within " + (int)_options.QueueAcceptanceTimeout.TotalSeconds + " seconds.");
                 Emit(ArenaEffectType.PersistState, session, null, "Queued player called.");
@@ -629,13 +637,9 @@ namespace ArenaGuard.Sessions
             session.PhaseDeadlineUtc = DateTime.MinValue;
             _activeByArena.Remove(session.ArenaId);
 
-            string originGateId;
-            _originGateBySessionId.TryGetValue(session.SessionId, out originGateId);
-            _originGateBySessionId.Remove(session.SessionId);
             _queue.Add(new QueueEntry
             {
                 Request = CloneRequest(session.Request),
-                OriginGateId = originGateId ?? string.Empty,
                 QueueSequence = _nextQueueSequence++,
                 EnqueuedUtc = now
             });
@@ -657,7 +661,6 @@ namespace ArenaGuard.Sessions
             session.PhaseStartedUtc = now;
             session.PhaseDeadlineUtc = DateTime.MinValue;
             _activeByArena.Remove(session.ArenaId);
-            _originGateBySessionId.Remove(session.SessionId);
             _recoveredPlansByRequestId.Remove(session.Request.RequestId);
             if (session.ResourceSnapshot != null)
             {
@@ -734,7 +737,6 @@ namespace ArenaGuard.Sessions
             session.PhaseDeadlineUtc = DateTime.MinValue;
             _activeByArena.Remove(session.ArenaId);
             _boundaryDeadlines.Remove(session.Request.PlayerId);
-            _originGateBySessionId.Remove(session.SessionId);
             _recoveredPlansByRequestId.Remove(session.Request.RequestId);
             Emit(ArenaEffectType.DespawnSessionEnemies, session, CurrentEncounterOrNull(session), "Remove all arena enemies.");
             if (session.ResourceSnapshot != null)
@@ -980,7 +982,6 @@ namespace ArenaGuard.Sessions
             return new QueueEntry
             {
                 Request = CloneRequest(entry.Request),
-                OriginGateId = entry.OriginGateId,
                 QueueSequence = entry.QueueSequence,
                 EnqueuedUtc = entry.EnqueuedUtc
             };

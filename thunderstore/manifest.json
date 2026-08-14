@@ -1,6 +1,6 @@
 {
   "name": "SkaldHall",
-  "version_number": "0.0.3",
+  "version_number": "0.0.4",
   "website_url": "https://github.com/jg224/SkaldHall",
   "description": "Server-authoritative NPC activities for Valheim. Build protected arenas now; quest-giver and additional Hall NPCs are planned.",
   "dependencies": [

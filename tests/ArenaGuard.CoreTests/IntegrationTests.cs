@@ -10,9 +10,6 @@ internal static partial class Program
 {
     private const string ArenaIdOne = "11111111111111111111111111111111";
     private const string ArenaIdTwo = "22222222222222222222222222222222";
-    private const string GateIdOne = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    private const string GateIdTwo = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    private const string GateIdFallback = "cccccccccccccccccccccccccccccccc";
 
     private static void RegistryUniqueNames()
     {
@@ -29,48 +26,6 @@ internal static partial class Program
             Equal("Grand Arena", found.DisplayName);
             Equal("grand arena", found.NormalizedName);
 
-            True(ArenaRegistry.RegisterGate(Gate(GateIdOne, ArenaIdOne, " North Gate ", false, 10f)),
-                "First gate should register.");
-            False(ArenaRegistry.RegisterGate(Gate(GateIdTwo, ArenaIdOne, "north gate", false, 20f)),
-                "Gate names must be case-insensitively unique after trimming.");
-        }
-        finally
-        {
-            ArenaRegistry.Clear();
-        }
-    }
-
-    private static void RegistryReturnRouting()
-    {
-        ArenaRegistry.Clear();
-        try
-        {
-            ArenaRegistry.RegisterArena(Arena(ArenaIdOne, "Arena"));
-            True(ArenaRegistry.RegisterGate(Gate(GateIdFallback, ArenaIdOne, "Fallback", true, 90f)),
-                "Fallback gate should register.");
-            True(ArenaRegistry.RegisterGate(Gate(GateIdOne, ArenaIdOne, "West", false, 180f)),
-                "First origin should register.");
-            True(ArenaRegistry.RegisterGate(Gate(GateIdTwo, ArenaIdOne, "East", false, 270f)),
-                "Second origin should register to the same arena.");
-            Equal(3, ArenaRegistry.GetGatesForArena(ArenaIdOne).Count);
-
-            True(ArenaRegistry.RecordRoute(new PlayerArenaRoute
-            {
-                PlayerId = 7,
-                ArenaId = ArenaIdOne,
-                OriginGateId = GateIdTwo,
-                EnteredUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-            }), "Route should be recorded.");
-
-            ArenaGateDefinition destination = ArenaRegistry.ResolveReturnGate(7);
-            Equal(GateIdTwo, destination.GateId);
-            Equal(270f, destination.RotationY);
-            Equal(270f, destination.Position.X);
-
-            True(ArenaRegistry.RemoveGate(GateIdTwo), "Origin gate should be removable.");
-            destination = ArenaRegistry.ResolveReturnGate(7);
-            Equal(GateIdFallback, destination.GateId);
-            Equal(90f, destination.RotationY);
         }
         finally
         {
@@ -84,7 +39,6 @@ internal static partial class Program
         try
         {
             ArenaRegistry.RegisterArena(Arena(ArenaIdOne, "Queue Arena"));
-            ArenaRegistry.RegisterGate(Gate(GateIdOne, ArenaIdOne, "Queue Gate", true, 0f));
             var sameTime = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             ArenaRegistry.ReplaceQueue(new[]
             {
@@ -114,17 +68,10 @@ internal static partial class Program
             True(ArenaRegistry.RegisterArena(Arena(ArenaIdOne, "Marker Arena")),
                 "Complete arena should register.");
 
-            True(ArenaRegistry.RemoveMarker(ArenaIdOne, ArenaMarkerKind.HubGate, -1),
-                "Optional Return Gate location should be removable.");
             ArenaDefinition arena;
             True(ArenaRegistry.TryGetArena(ArenaIdOne, out arena), "Arena should remain registered.");
-            True(arena.Enabled, "Editing the optional Return Gate location must not disable the challenge arena.");
             True(ArenaRegistry.MarkersAreComplete(arena.Markers),
                 "Arena Master, Combat Start, and four Enemy Spawns are the complete challenge layout.");
-            False(ArenaRegistry.MissingRequiredMarkers(arena.Markers)
-                    .Any(item => item.IndexOf("hub", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                 item.IndexOf("gate", StringComparison.OrdinalIgnoreCase) >= 0),
-                "Missing-marker diagnostics must never require an optional gate.");
 
             True(ArenaRegistry.RemoveMarker(ArenaIdOne, ArenaMarkerKind.EnemySpawn, 1),
                 "Enemy Spawn 2 should be removable by its stable slot.");
@@ -345,7 +292,7 @@ internal static partial class Program
 
             string path = ArenaStore.GetPath(worldUid);
             string serialized = File.ReadAllText(path);
-            serialized = serialized.Replace("\"schemaVersion\":3", "\"schemaVersion\":1");
+            serialized = serialized.Replace("\"schemaVersion\":4", "\"schemaVersion\":1");
             File.WriteAllText(path, serialized);
 
             PersistedWorldState loaded = ArenaStore.Load(worldUid);
@@ -353,6 +300,35 @@ internal static partial class Program
             Equal(BiomeTier.BlackForest, loaded.Queue.Single().Request.SelectedBiome);
             Equal(ProgressionCapMode.Gauntlet, loaded.Leaderboard.Single().Key.CapMode);
             Equal(BiomeTier.BlackForest, loaded.Leaderboard.Single().Key.SelectedBiome);
+        });
+    }
+
+    private static void StoreStripsLegacyTravelFields()
+    {
+        WithTemporaryStore(() =>
+        {
+            const long worldUid = 9013;
+            PersistedWorldState state = EmptyWorld(worldUid);
+            state.Arenas.Add(Arena(ArenaIdOne, "Migration Arena"));
+            True(ArenaStore.Save(state), "Current state should save before legacy fields are injected.");
+
+            string path = ArenaStore.GetPath(worldUid);
+            string serialized = File.ReadAllText(path);
+            serialized = serialized.Replace("\"schemaVersion\":4", "\"schemaVersion\":3");
+            serialized = serialized.Replace("\"Arenas\":", "\"Gates\":[{\"GateId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]," +
+                                                    "\"Routes\":[{\"PlayerId\":7}],\"Arenas\":");
+            serialized = serialized.Replace("\"CombatantStartPosition\":", "\"HubGatePosition\":{\"X\":9,\"Y\":0,\"Z\":9}," +
+                                                                  "\"CombatantStartPosition\":");
+            File.WriteAllText(path, serialized);
+
+            PersistedWorldState loaded = ArenaStore.Load(worldUid);
+            Equal(1, loaded.Arenas.Count);
+            True(ArenaStore.Save(loaded), "Migrated state should be rewritten in the current schema.");
+            string rewritten = File.ReadAllText(path);
+            False(rewritten.Contains("\"Gates\""), "Obsolete gate definitions must not survive migration.");
+            False(rewritten.Contains("\"Routes\""), "Obsolete return routes must not survive migration.");
+            False(rewritten.Contains("\"HubGatePosition\""), "Obsolete hub positions must not survive migration.");
+            True(rewritten.Contains("\"schemaVersion\":4"), "Migrated state must use schema 4.");
         });
     }
 
@@ -395,7 +371,6 @@ internal static partial class Program
             {
                 StagingPosition = new PositionData { X = 25f },
                 CombatantStartPosition = new PositionData(),
-                HubGatePosition = new PositionData { X = 28f },
                 EnemySpawnPositions = new List<PositionData>
                 {
                     new PositionData { X = 10f },
@@ -406,24 +381,6 @@ internal static partial class Program
             },
             Enabled = true,
             Revision = 1
-        };
-    }
-
-    private static ArenaGateDefinition Gate(
-        string gateId,
-        string arenaId,
-        string displayName,
-        bool fallback,
-        float x)
-    {
-        return new ArenaGateDefinition
-        {
-            GateId = gateId,
-            ArenaId = arenaId,
-            DisplayName = displayName,
-            Position = new PositionData { X = x },
-            RotationY = x,
-            IsFallbackEntrance = fallback
         };
     }
 
@@ -442,7 +399,6 @@ internal static partial class Program
                 SelectedBiome = BiomeTier.BlackForest,
                 RequestedUtc = enqueued
             },
-            OriginGateId = GateIdOne,
             QueueSequence = sequence,
             EnqueuedUtc = enqueued
         };
@@ -455,8 +411,6 @@ internal static partial class Program
             WorldUid = uid,
             RosterRevision = 1,
             Arenas = new List<ArenaDefinition>(),
-            Gates = new List<ArenaGateDefinition>(),
-            Routes = new List<PlayerArenaRoute>(),
             Queue = new List<QueueEntry>(),
             InterruptedSessions = new List<ArenaSession>(),
             Leaderboard = new List<LeaderboardEntry>()

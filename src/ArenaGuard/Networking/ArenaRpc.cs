@@ -13,17 +13,16 @@ namespace ArenaGuard.Networking
         RegisterArena = 1,
         RemoveArena = 2,
         SetMarkers = 3,
-        RegisterGate = 4,
-        RemoveGate = 5,
-        SetMarker = 6,
-        RemoveMarker = 7,
-        SetAdminTerrainPermission = 8,
-        SetAdminBuildingPermission = 9,
-        SetAdminPickupPermission = 10,
-        RequestAdminStatus = 11,
-        AbortArena = 12,
-        AbortAllArenas = 13,
-        ClearArenaQueue = 14
+        SetMarker = 4,
+        RemoveMarker = 5,
+        SetAdminTerrainPermission = 6,
+        SetAdminBuildingPermission = 7,
+        SetAdminPickupPermission = 8,
+        RequestAdminStatus = 9,
+        AbortArena = 10,
+        AbortAllArenas = 11,
+        ClearArenaQueue = 12,
+        ConfigureLeaderboardBoard = 13
     }
 
     internal sealed class ArenaAdminMutation
@@ -32,7 +31,6 @@ namespace ArenaGuard.Networking
         internal string TargetId;
         internal ArenaDefinition Arena;
         internal ArenaMarkerSet Markers;
-        internal ArenaGateDefinition Gate;
         internal int MarkerKind;
         internal int MarkerSlot;
         internal PositionData MarkerPosition;
@@ -73,9 +71,6 @@ namespace ArenaGuard.Networking
         internal Func<ArenaRequestContext, ArenaRpcResult> LethalDamageReported { get; set; }
         internal Func<ArenaRequestContext, ArenaRpcResult> CombatStartArrived { get; set; }
         internal Func<ArenaRequestContext, ArenaAdminMutation, ArenaRpcResult> AdminMutationRequested { get; set; }
-        internal Func<ArenaRequestContext, ArenaGateDefinition, bool, ArenaRpcResult> GateTravelAuthorizing { get; set; }
-        internal Func<ArenaRequestContext, ArenaGateTravelAuthorization, bool, ArenaRpcResult> GateTravelCompleted { get; set; }
-        internal Func<ArenaGateTravelAuthorization, bool> ClientGateTravelAuthorized { get; set; }
         internal Func<ArenaRequestContext, PlayerResourceSnapshot, ArenaRpcResult> ResourceSnapshotReceived { get; set; }
         internal Func<PlayerResourceSnapshot, SessionOutcome, bool> ClientResourceRestoreRequested { get; set; }
         internal Action<ArenaRequestContext, string, bool> ResourceRestoreCompleted { get; set; }
@@ -84,20 +79,9 @@ namespace ArenaGuard.Networking
         internal Func<LeaderboardKey, List<LeaderboardEntry>> LeaderboardRequested { get; set; }
         internal Action<ArenaClientSnapshot> ClientSnapshotReceived { get; set; }
         internal Action<string> ClientArenaRemoved { get; set; }
-        internal Action<ArenaGateDefinition> ClientGateConfigurationReceived { get; set; }
         internal Action<LeaderboardKey, List<LeaderboardEntry>> ClientLeaderboardReceived { get; set; }
         internal Action<bool, string> ClientActionResultReceived { get; set; }
         internal Action<long> ServerPeerConnected { get; set; }
-    }
-
-    internal sealed class ArenaGateTravelAuthorization
-    {
-        internal string TravelToken;
-        internal string GateId;
-        internal string ArenaId;
-        internal PositionData Destination;
-        internal float RotationY;
-        internal bool Returning;
     }
 
     /// <summary>
@@ -106,27 +90,19 @@ namespace ArenaGuard.Networking
     /// </summary>
     internal static class ArenaRpc
     {
-        private sealed class PendingGateTravel
-        {
-            internal ArenaRequestContext Context;
-            internal ArenaGateTravelAuthorization Authorization;
-            internal DateTime ExpiresUtc;
-        }
-
         private sealed class PendingResourceRestore
         {
             internal ArenaRequestContext Context;
             internal DateTime ExpiresUtc;
         }
 
-        private const int ProtocolVersion = 8;
+        private const int ProtocolVersion = 10;
         private const int MaximumPackageBytes = 1024 * 1024;
         private const int MaximumLeaderboardEntries = 500;
         private const int MaximumStringLength = 256;
         private const int MaximumResourceEntries = 1024;
         private const int MaximumAppliedRestoreKeys = 128;
-        private const float MaximumGateUseDistance = 10f;
-        private static readonly TimeSpan GateTravelTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan ResourceRestoreTimeout = TimeSpan.FromSeconds(30);
         private const string ChallengeRpc = Plugin.PluginGuid + ".RequestChallenge";
         private const string AcceptRpc = Plugin.PluginGuid + ".AcceptQueueCall";
         private const string ForfeitRpc = Plugin.PluginGuid + ".RequestForfeit";
@@ -135,13 +111,9 @@ namespace ArenaGuard.Networking
         private const string AdminRpc = Plugin.PluginGuid + ".RequestAdminMutation";
         private const string SnapshotRpc = Plugin.PluginGuid + ".ArenaSnapshot";
         private const string ArenaRemovedRpc = Plugin.PluginGuid + ".ArenaRemoved";
-        private const string GateConfigurationRpc = Plugin.PluginGuid + ".GateConfiguration";
         private const string LeaderboardRequestRpc = Plugin.PluginGuid + ".RequestLeaderboard";
         private const string LeaderboardResponseRpc = Plugin.PluginGuid + ".Leaderboard";
         private const string ResultRpc = Plugin.PluginGuid + ".ActionResult";
-        private const string GateTravelRequestRpc = Plugin.PluginGuid + ".RequestGateTravel";
-        private const string GateTravelAuthorizationRpc = Plugin.PluginGuid + ".AuthorizeGateTravel";
-        private const string GateTravelAcknowledgementRpc = Plugin.PluginGuid + ".AcknowledgeGateTravel";
         private const string ResourceSnapshotRpc = Plugin.PluginGuid + ".SubmitResourceSnapshot";
         private const string ResourceRestoreRpc = Plugin.PluginGuid + ".RestoreResources";
         private const string ResourceRestoreAcknowledgementRpc = Plugin.PluginGuid + ".AcknowledgeResourceRestore";
@@ -150,8 +122,6 @@ namespace ArenaGuard.Networking
         private static ZRoutedRpc _registeredInstance;
         private static Action<long> _newPeerHandler;
         private static ArenaRpcCallbacks _callbacks = new ArenaRpcCallbacks();
-        private static readonly Dictionary<string, PendingGateTravel> PendingGateTravels =
-            new Dictionary<string, PendingGateTravel>(StringComparer.Ordinal);
         private static readonly Dictionary<string, PendingResourceRestore> PendingResourceRestores =
             new Dictionary<string, PendingResourceRestore>(StringComparer.Ordinal);
         private static readonly HashSet<string> AppliedResourceRestoreKeys =
@@ -182,13 +152,9 @@ namespace ArenaGuard.Networking
                 rpc.Register<ZPackage>(AdminRpc, OnAdminMutation);
                 rpc.Register<ZPackage>(SnapshotRpc, OnArenaSnapshot);
                 rpc.Register<ZPackage>(ArenaRemovedRpc, OnArenaRemoved);
-                rpc.Register<ZPackage>(GateConfigurationRpc, OnGateConfiguration);
                 rpc.Register<ZPackage>(LeaderboardRequestRpc, OnLeaderboardRequest);
                 rpc.Register<ZPackage>(LeaderboardResponseRpc, OnLeaderboardResponse);
                 rpc.Register<ZPackage>(ResultRpc, OnActionResult);
-                rpc.Register<ZPackage>(GateTravelRequestRpc, OnGateTravelRequest);
-                rpc.Register<ZPackage>(GateTravelAuthorizationRpc, OnGateTravelAuthorization);
-                rpc.Register<ZPackage>(GateTravelAcknowledgementRpc, OnGateTravelAcknowledgement);
                 rpc.Register<ZPackage>(ResourceSnapshotRpc, OnResourceSnapshot);
                 rpc.Register<ZPackage>(ResourceRestoreRpc, OnResourceRestore);
                 rpc.Register<ZPackage>(ResourceRestoreAcknowledgementRpc, OnResourceRestoreAcknowledgement);
@@ -315,37 +281,6 @@ namespace ArenaGuard.Networking
             rpc.InvokeRoutedRPC(AdminRpc, package);
         }
 
-        /// <summary>
-        /// Begins a two-phase portal move. The server validates the sending character and persists
-        /// entrance routing before returning a targeted destination. Completion is acknowledged only
-        /// after the owning client accepts TeleportTo.
-        /// </summary>
-        internal static bool RequestGateTravel(string gateId, bool returning)
-        {
-            if (!returning) gateId = RequireId(gateId, "gate ID");
-            else gateId = string.Empty;
-            if (!TryPrepareLocalRequest(out ZNet znet, out ZRoutedRpc rpc)) return false;
-            if (znet.IsServer())
-            {
-                if (!TryResolveLocalContext(out ArenaRequestContext context)) return false;
-                ArenaRpcResult result = TryAuthorizeGateTravel(context, gateId, returning,
-                    out ArenaGateTravelAuthorization authorization);
-                if (!result.Success)
-                {
-                    ReceiveLocalResult(result);
-                    return false;
-                }
-                CompleteLocalGateTravel(context, authorization);
-                return true;
-            }
-
-            var package = NewPackage();
-            package.Write(returning);
-            package.Write(gateId);
-            rpc.InvokeRoutedRPC(GateTravelRequestRpc, package);
-            return true;
-        }
-
         internal static void SubmitResourceSnapshot(PlayerResourceSnapshot snapshot)
         {
             PlayerResourceSnapshot wire = ValidateAndCopyResourceSnapshot(snapshot, 0, false);
@@ -389,7 +324,7 @@ namespace ArenaGuard.Networking
                 PendingResourceRestores[token] = new PendingResourceRestore
                 {
                     Context = context,
-                    ExpiresUtc = DateTime.UtcNow.Add(GateTravelTimeout)
+                    ExpiresUtc = DateTime.UtcNow.Add(ResourceRestoreTimeout)
                 };
                 var package = NewPackage();
                 package.Write(token);
@@ -474,23 +409,6 @@ namespace ArenaGuard.Networking
             }
         }
 
-        internal static void BroadcastGateConfiguration(ArenaGateDefinition gate)
-        {
-            ArenaGateDefinition wire = ValidateAndCopyGate(gate);
-            ZNet znet = ZNet.instance;
-            ZRoutedRpc rpc = ZRoutedRpc.instance;
-            if (znet == null || rpc == null || !znet.IsServer()) return;
-
-            _callbacks.ClientGateConfigurationReceived?.Invoke(wire);
-            foreach (ZNetPeer peer in znet.GetConnectedPeers())
-            {
-                if (peer == null) continue;
-                var package = NewPackage();
-                WriteGate(package, wire);
-                rpc.InvokeRoutedRPC(peer.m_uid, GateConfigurationRpc, package);
-            }
-        }
-
         private static void SendArenaStateToPeer(long peerUid, string arenaId)
         {
             ZNet znet = ZNet.instance;
@@ -533,17 +451,42 @@ namespace ArenaGuard.Networking
             }
         }
 
+        internal static void BroadcastLeaderboard(LeaderboardKey key)
+        {
+            LeaderboardKey normalized = NormalizeLeaderboardKey(key);
+            List<LeaderboardEntry> entries = (_callbacks.LeaderboardRequested?.Invoke(normalized) ??
+                                              new List<LeaderboardEntry>())
+                .Take(MaximumLeaderboardEntries)
+                .ToList();
+            ZNet znet = ZNet.instance;
+            ZRoutedRpc rpc = ZRoutedRpc.instance;
+            if (znet == null || rpc == null || !znet.IsServer())
+            {
+                return;
+            }
+            if (Player.m_localPlayer != null)
+            {
+                _callbacks.ClientLeaderboardReceived?.Invoke(normalized, entries);
+            }
+            foreach (ZNetPeer peer in znet.GetConnectedPeers())
+            {
+                if (peer == null)
+                {
+                    continue;
+                }
+                var package = NewPackage();
+                WriteLeaderboardKey(package, normalized);
+                package.Write(entries.Count);
+                foreach (LeaderboardEntry entry in entries)
+                {
+                    WriteLeaderboardEntry(package, entry);
+                }
+                rpc.InvokeRoutedRPC(peer.m_uid, LeaderboardResponseRpc, package);
+            }
+        }
+
         internal static void Shutdown()
         {
-            foreach (PendingGateTravel pending in PendingGateTravels.Values.ToList())
-            {
-                try { CompleteGateTravel(pending.Context, pending.Authorization, false); }
-                catch (Exception exception)
-                {
-                    Plugin.Log?.LogWarning("Could not cancel pending gate travel during shutdown: " + exception.Message);
-                }
-            }
-            PendingGateTravels.Clear();
             PendingResourceRestores.Clear();
             AppliedResourceRestoreKeys.Clear();
             AppliedResourceRestoreOrder.Clear();
@@ -701,21 +644,6 @@ namespace ArenaGuard.Networking
             }
         }
 
-        private static void OnGateConfiguration(long sender, ZPackage package)
-        {
-            if (!TryBeginClientResponse(sender, package)) return;
-            try
-            {
-                ArenaGateDefinition gate = ReadGate(package);
-                RequireConsumed(package);
-                _callbacks.ClientGateConfigurationReceived?.Invoke(gate);
-            }
-            catch (Exception exception)
-            {
-                Plugin.Log?.LogError($"Rejected invalid gate configuration: {exception}");
-            }
-        }
-
         private static void OnLeaderboardResponse(long sender, ZPackage package)
         {
             if (!TryBeginClientResponse(sender, package)) return;
@@ -749,82 +677,6 @@ namespace ArenaGuard.Networking
             catch (Exception exception)
             {
                 Plugin.Log?.LogError($"Rejected invalid arena action result: {exception}");
-            }
-        }
-
-        private static void OnGateTravelRequest(long sender, ZPackage package)
-        {
-            if (!TryBeginServerRequest(sender, package, out ArenaRequestContext context)) return;
-            try
-            {
-                bool returning = package.ReadBool();
-                string gateId = ReadString(package, 64);
-                RequireConsumed(package);
-                if (!returning) gateId = RequireId(gateId, "gate ID");
-                else if (gateId.Length != 0) throw new InvalidOperationException("A return request cannot select a destination gate.");
-
-                ArenaRpcResult result = TryAuthorizeGateTravel(context, gateId, returning,
-                    out ArenaGateTravelAuthorization authorization);
-                if (!result.Success)
-                {
-                    SendResult(sender, result);
-                    return;
-                }
-
-                var response = NewPackage();
-                WriteGateTravelAuthorization(response, authorization);
-                ZRoutedRpc.instance?.InvokeRoutedRPC(sender, GateTravelAuthorizationRpc, response);
-            }
-            catch (Exception exception)
-            {
-                Reject(sender, "gate travel request", exception);
-            }
-        }
-
-        private static void OnGateTravelAuthorization(long sender, ZPackage package)
-        {
-            if (!TryBeginClientResponse(sender, package)) return;
-            ArenaGateTravelAuthorization authorization = null;
-            bool accepted = false;
-            try
-            {
-                authorization = ReadGateTravelAuthorization(package);
-                RequireConsumed(package);
-                accepted = _callbacks.ClientGateTravelAuthorized?.Invoke(authorization) == true;
-            }
-            catch (Exception exception)
-            {
-                Plugin.Log?.LogError($"Could not apply ArenaGuard gate destination: {exception}");
-            }
-
-            if (authorization == null) return;
-            ZRoutedRpc rpc = ZRoutedRpc.instance;
-            if (rpc == null) return;
-            var acknowledgement = NewPackage();
-            acknowledgement.Write(authorization.TravelToken);
-            acknowledgement.Write(accepted);
-            rpc.InvokeRoutedRPC(GateTravelAcknowledgementRpc, acknowledgement);
-        }
-
-        private static void OnGateTravelAcknowledgement(long sender, ZPackage package)
-        {
-            if (!TryBeginServerRequest(sender, package, out ArenaRequestContext context)) return;
-            try
-            {
-                string token = RequireId(ReadString(package, 64), "travel token");
-                bool accepted = package.ReadBool();
-                RequireConsumed(package);
-                RemoveExpiredGateTravels();
-                if (!PendingGateTravels.TryGetValue(token, out PendingGateTravel pending) ||
-                    pending.Context.PlayerId != context.PlayerId || pending.Context.PeerUid != context.PeerUid)
-                    throw new InvalidOperationException("Gate travel authorization is missing, expired, or belongs to another player.");
-                PendingGateTravels.Remove(token);
-                ArenaRpcResult result = CompleteGateTravel(context, pending.Authorization, accepted);
-                SendResult(sender, result);
-            }
-            catch (Exception exception)
-            {
-                Reject(sender, "gate travel acknowledgement", exception);
             }
         }
 
@@ -920,135 +772,6 @@ namespace ArenaGuard.Networking
             }
         }
 
-        private static ArenaRpcResult TryAuthorizeGateTravel(ArenaRequestContext context, string gateId,
-            bool returning, out ArenaGateTravelAuthorization authorization)
-        {
-            authorization = null;
-            RemoveExpiredGateTravels();
-            if (!ServerPortalRulesAllowTravel(out string portalRejection))
-                return ArenaRpcResult.Rejected(portalRejection);
-            ArenaGateDefinition destinationGate;
-            ArenaDefinition arena;
-            string arenaId;
-            PositionData destination;
-            float rotationY;
-
-            if (returning)
-            {
-                if (!ArenaRegistry.TryGetRoute(context.PlayerId, out PlayerArenaRoute route) ||
-                    !ArenaRegistry.TryGetArena(route.ArenaId, out arena))
-                    return ArenaRpcResult.Rejected("No saved arena entrance is available for your character.");
-                if (arena.Markers == null || !WithinDistance(context.Position, arena.Markers.HubGatePosition,
-                    MaximumGateUseDistance))
-                    return ArenaRpcResult.Rejected("Stand next to the arena return gate to leave.");
-                destinationGate = ArenaRegistry.ResolveReturnGate(context.PlayerId);
-                if (destinationGate == null)
-                    return ArenaRpcResult.Rejected("Your entrance gate and the arena fallback gate are unavailable.");
-                arenaId = arena.ArenaId;
-                gateId = destinationGate.GateId;
-                destination = destinationGate.Position;
-                rotationY = destinationGate.RotationY;
-            }
-            else
-            {
-                if (!ArenaRegistry.TryGetGate(gateId, out ArenaGateDefinition entrance) ||
-                    !ArenaRegistry.TryGetArena(entrance.ArenaId, out arena) || !arena.Enabled || arena.Markers == null)
-                    return ArenaRpcResult.Rejected("That arena entrance is unavailable.");
-                if (!WithinDistance(context.Position, entrance.Position, MaximumGateUseDistance))
-                    return ArenaRpcResult.Rejected("Stand next to the Arena Gate to use it.");
-                destinationGate = entrance;
-                arenaId = arena.ArenaId;
-                // Gates are optional travel infrastructure, not challenge state.
-                // Every entrance arrives at the Arena Master staging point.
-                destination = arena.Markers.StagingPosition;
-                rotationY = 0f;
-            }
-
-            ArenaRpcResult preparation = _callbacks.GateTravelAuthorizing == null
-                ? ArenaRpcResult.Rejected("Arena gate routing is not ready.")
-                : _callbacks.GateTravelAuthorizing(context, destinationGate, returning) ??
-                  ArenaRpcResult.Rejected("Arena server returned no gate result.");
-            if (!preparation.Success) return preparation;
-
-            authorization = new ArenaGateTravelAuthorization
-            {
-                TravelToken = Guid.NewGuid().ToString("N").ToLowerInvariant(),
-                GateId = gateId,
-                ArenaId = arenaId,
-                Destination = destination,
-                RotationY = rotationY,
-                Returning = returning
-            };
-            PendingGateTravels[authorization.TravelToken] = new PendingGateTravel
-            {
-                Context = context,
-                Authorization = authorization,
-                ExpiresUtc = DateTime.UtcNow.Add(GateTravelTimeout)
-            };
-            return ArenaRpcResult.Accepted();
-        }
-
-        private static bool ServerPortalRulesAllowTravel(out string rejection)
-        {
-            ZoneSystem zones = ZoneSystem.instance;
-            if (zones != null && zones.GetGlobalKey(GlobalKeys.NoPortals))
-            {
-                rejection = "Portals are disabled in this world.";
-                return false;
-            }
-            if (zones != null && zones.GetGlobalKey(GlobalKeys.NoBossPortals))
-            {
-                float activeBosses;
-                bool bossEvent = RandEventSystem.instance != null &&
-                                 !string.IsNullOrEmpty(RandEventSystem.instance.GetBossEvent());
-                bool bossKey = zones.GetGlobalKey(GlobalKeys.activeBosses, out activeBosses) && activeBosses > 0f;
-                if (bossEvent || bossKey)
-                {
-                    rejection = "Portals are blocked while a boss is active.";
-                    return false;
-                }
-            }
-            rejection = string.Empty;
-            return true;
-        }
-
-        private static void CompleteLocalGateTravel(ArenaRequestContext context,
-            ArenaGateTravelAuthorization authorization)
-        {
-            bool accepted = false;
-            try { accepted = _callbacks.ClientGateTravelAuthorized?.Invoke(authorization) == true; }
-            catch (Exception exception) { Plugin.Log?.LogError($"Could not apply local ArenaGuard gate destination: {exception}"); }
-            PendingGateTravels.Remove(authorization.TravelToken);
-            ReceiveLocalResult(CompleteGateTravel(context, authorization, accepted));
-        }
-
-        private static ArenaRpcResult CompleteGateTravel(ArenaRequestContext context,
-            ArenaGateTravelAuthorization authorization, bool accepted)
-        {
-            return _callbacks.GateTravelCompleted == null
-                ? ArenaRpcResult.Rejected("Arena gate completion is not ready.")
-                : _callbacks.GateTravelCompleted(context, authorization, accepted) ??
-                  ArenaRpcResult.Rejected("Arena server returned no gate completion result.");
-        }
-
-        private static void RemoveExpiredGateTravels()
-        {
-            DateTime now = DateTime.UtcNow;
-            foreach (string token in PendingGateTravels.Where(pair => pair.Value.ExpiresUtc <= now)
-                .Select(pair => pair.Key).ToList())
-            {
-                PendingGateTravel pending = PendingGateTravels[token];
-                PendingGateTravels.Remove(token);
-                // An entrance route may already be persisted. Completion=false gives composition
-                // a deterministic opportunity to roll it back; return requests have no mutation yet.
-                try { CompleteGateTravel(pending.Context, pending.Authorization, false); }
-                catch (Exception exception)
-                {
-                    Plugin.Log?.LogWarning($"Could not expire gate travel '{token}': {exception.Message}");
-                }
-            }
-        }
-
         private static void RemoveExpiredResourceRestores()
         {
             DateTime now = DateTime.UtcNow;
@@ -1098,7 +821,7 @@ namespace ArenaGuard.Networking
         private static void ValidateAdminMutation(ArenaAdminMutation mutation)
         {
             if (mutation == null || mutation.Kind < ArenaAdminMutationKind.RegisterArena ||
-                mutation.Kind > ArenaAdminMutationKind.ClearArenaQueue)
+                mutation.Kind > ArenaAdminMutationKind.ConfigureLeaderboardBoard)
                 throw new ArgumentException("Unknown administrator mutation type.", nameof(mutation));
             switch (mutation.Kind)
             {
@@ -1106,7 +829,6 @@ namespace ArenaGuard.Networking
                     if (mutation.Arena == null) throw new ArgumentException("Arena definition is required.");
                     break;
                 case ArenaAdminMutationKind.RemoveArena:
-                case ArenaAdminMutationKind.RemoveGate:
                     mutation.TargetId = RequireId(mutation.TargetId, "mutation target ID");
                     break;
                 case ArenaAdminMutationKind.SetMarkers:
@@ -1115,14 +837,11 @@ namespace ArenaGuard.Networking
                         mutation.Markers.EnemySpawnPositions.Count != 4)
                         throw new ArgumentException("A complete marker set requires exactly four enemy positions.");
                     break;
-                case ArenaAdminMutationKind.RegisterGate:
-                    if (mutation.Gate == null) throw new ArgumentException("Gate definition is required.");
-                    break;
                 case ArenaAdminMutationKind.SetMarker:
                 case ArenaAdminMutationKind.RemoveMarker:
                     mutation.TargetId = RequireId(mutation.TargetId, "arena ID");
                     bool enemySpawn = mutation.MarkerKind == 2;
-                    if (mutation.MarkerKind < 0 || mutation.MarkerKind > 3 ||
+                    if (mutation.MarkerKind < 0 || mutation.MarkerKind > 2 ||
                         (enemySpawn && (mutation.MarkerSlot < 0 || mutation.MarkerSlot > 3)) ||
                         (!enemySpawn && mutation.MarkerSlot != -1) ||
                         !Finite(mutation.MarkerPosition.X) || !Finite(mutation.MarkerPosition.Y) ||
@@ -1143,6 +862,12 @@ namespace ArenaGuard.Networking
                     mutation.TargetId = Trim(mutation.TargetId, 64);
                     if (string.IsNullOrWhiteSpace(mutation.TargetId))
                         throw new ArgumentException("An arena ID or name is required.");
+                    break;
+                case ArenaAdminMutationKind.ConfigureLeaderboardBoard:
+                    mutation.TargetId = RequireId(mutation.TargetId, "leaderboard board ID");
+                    if (!ArenaLeaderboardBoardPolicy.IsValidCategory(
+                            (ArenaLeaderboardCategory)mutation.MarkerSlot))
+                        throw new ArgumentException("Leaderboard board category is invalid.");
                     break;
             }
         }
@@ -1411,8 +1136,6 @@ namespace ArenaGuard.Networking
             if (mutation.Arena != null) WriteArena(package, mutation.Arena);
             package.Write(mutation.Markers != null);
             if (mutation.Markers != null) WriteMarkers(package, mutation.Markers);
-            package.Write(mutation.Gate != null);
-            if (mutation.Gate != null) WriteGate(package, mutation.Gate);
             if (mutation.Kind == ArenaAdminMutationKind.SetMarker ||
                 mutation.Kind == ArenaAdminMutationKind.RemoveMarker)
             {
@@ -1426,33 +1149,10 @@ namespace ArenaGuard.Networking
             {
                 package.Write(mutation.Enabled);
             }
-        }
-
-        private static void WriteGateTravelAuthorization(ZPackage package,
-            ArenaGateTravelAuthorization authorization)
-        {
-            package.Write(authorization.TravelToken ?? string.Empty);
-            package.Write(authorization.GateId ?? string.Empty);
-            package.Write(authorization.ArenaId ?? string.Empty);
-            WritePosition(package, authorization.Destination);
-            package.Write(authorization.RotationY);
-            package.Write(authorization.Returning);
-        }
-
-        private static ArenaGateTravelAuthorization ReadGateTravelAuthorization(ZPackage package)
-        {
-            var authorization = new ArenaGateTravelAuthorization
+            if (mutation.Kind == ArenaAdminMutationKind.ConfigureLeaderboardBoard)
             {
-                TravelToken = RequireId(ReadString(package, 64), "travel token"),
-                GateId = RequireId(ReadString(package, 64), "gate ID"),
-                ArenaId = RequireId(ReadString(package, 64), "arena ID"),
-                Destination = ReadPosition(package),
-                RotationY = package.ReadSingle(),
-                Returning = package.ReadBool()
-            };
-            if (!Finite(authorization.RotationY))
-                throw new InvalidOperationException("Gate destination rotation is invalid.");
-            return authorization;
+                package.Write(mutation.MarkerSlot);
+            }
         }
 
         private static ArenaAdminMutation ReadAdminMutation(ZPackage package)
@@ -1463,18 +1163,17 @@ namespace ArenaGuard.Networking
                 TargetId = ReadString(package, 64)
             };
             if (mutation.Kind < ArenaAdminMutationKind.RegisterArena ||
-                mutation.Kind > ArenaAdminMutationKind.ClearArenaQueue)
+                mutation.Kind > ArenaAdminMutationKind.ConfigureLeaderboardBoard)
                 throw new InvalidOperationException("Unknown administrator mutation type.");
             if (package.ReadBool()) mutation.Arena = ReadArena(package);
             if (package.ReadBool()) mutation.Markers = ReadMarkers(package);
-            if (package.ReadBool()) mutation.Gate = ReadGate(package);
             if (mutation.Kind == ArenaAdminMutationKind.SetMarker ||
                 mutation.Kind == ArenaAdminMutationKind.RemoveMarker)
             {
                 mutation.MarkerKind = package.ReadInt();
                 mutation.MarkerSlot = package.ReadInt();
                 mutation.MarkerPosition = ReadPosition(package);
-                if (mutation.MarkerKind < 0 || mutation.MarkerKind > 3 || mutation.MarkerSlot < -1 ||
+                if (mutation.MarkerKind < 0 || mutation.MarkerKind > 2 || mutation.MarkerSlot < -1 ||
                     mutation.MarkerSlot > 3 || string.IsNullOrWhiteSpace(mutation.TargetId))
                     throw new InvalidOperationException("Incremental arena marker mutation is invalid.");
                 mutation.TargetId = RequireId(mutation.TargetId, "arena ID");
@@ -1485,6 +1184,14 @@ namespace ArenaGuard.Networking
             {
                 mutation.Enabled = package.ReadBool();
                 mutation.TargetId = RequireId(mutation.TargetId, "arena ID");
+            }
+            if (mutation.Kind == ArenaAdminMutationKind.ConfigureLeaderboardBoard)
+            {
+                mutation.MarkerSlot = package.ReadInt();
+                mutation.TargetId = RequireId(mutation.TargetId, "leaderboard board ID");
+                if (!ArenaLeaderboardBoardPolicy.IsValidCategory(
+                        (ArenaLeaderboardCategory)mutation.MarkerSlot))
+                    throw new InvalidOperationException("Leaderboard board category is invalid.");
             }
             return mutation;
         }
@@ -1522,7 +1229,6 @@ namespace ArenaGuard.Networking
         {
             WritePosition(package, markers.StagingPosition);
             WritePosition(package, markers.CombatantStartPosition);
-            WritePosition(package, markers.HubGatePosition);
             int count = markers.EnemySpawnPositions?.Count ?? 0;
             package.Write(count);
             for (int i = 0; i < count; i++) WritePosition(package, markers.EnemySpawnPositions[i]);
@@ -1534,54 +1240,12 @@ namespace ArenaGuard.Networking
             {
                 StagingPosition = ReadPosition(package),
                 CombatantStartPosition = ReadPosition(package),
-                HubGatePosition = ReadPosition(package),
                 EnemySpawnPositions = new List<PositionData>()
             };
             int count = package.ReadInt();
             if (count < 0 || count > 4) throw new InvalidOperationException("Enemy marker count is invalid.");
             for (int i = 0; i < count; i++) markers.EnemySpawnPositions.Add(ReadPosition(package));
             return markers;
-        }
-
-        private static void WriteGate(ZPackage package, ArenaGateDefinition gate)
-        {
-            package.Write(gate.GateId ?? string.Empty);
-            package.Write(gate.ArenaId ?? string.Empty);
-            package.Write(gate.DisplayName ?? string.Empty);
-            WritePosition(package, gate.Position);
-            package.Write(gate.RotationY);
-            package.Write(gate.IsFallbackEntrance);
-        }
-
-        private static ArenaGateDefinition ReadGate(ZPackage package)
-        {
-            return ValidateAndCopyGate(new ArenaGateDefinition
-            {
-                GateId = ReadString(package, 64),
-                ArenaId = ReadString(package, 64),
-                DisplayName = ReadString(package, 64),
-                Position = ReadPosition(package),
-                RotationY = package.ReadSingle(),
-                IsFallbackEntrance = package.ReadBool()
-            });
-        }
-
-        private static ArenaGateDefinition ValidateAndCopyGate(ArenaGateDefinition source)
-        {
-            if (source == null) throw new ArgumentNullException(nameof(source));
-            string name = (source.DisplayName ?? string.Empty).Trim();
-            if (name.Length == 0 || name.Length > 64 || !Finite(source.RotationY) ||
-                !Finite(source.Position.X) || !Finite(source.Position.Y) || !Finite(source.Position.Z))
-                throw new ArgumentException("Gate configuration is invalid.", nameof(source));
-            return new ArenaGateDefinition
-            {
-                GateId = RequireId(source.GateId, "gate ID"),
-                ArenaId = RequireId(source.ArenaId, "arena ID"),
-                DisplayName = name,
-                Position = source.Position,
-                RotationY = source.RotationY,
-                IsFallbackEntrance = source.IsFallbackEntrance
-            };
         }
 
         private static void WriteArenaSnapshot(ZPackage package, ArenaClientSnapshot snapshot)
@@ -1752,6 +1416,7 @@ namespace ArenaGuard.Networking
             package.Write(entry.ElapsedMilliseconds);
             package.Write(entry.RosterRevision);
             package.Write(entry.RecordedUtc.ToBinary());
+            package.Write(entry.RecordedServerLocal ?? string.Empty);
         }
 
         private static LeaderboardEntry ReadLeaderboardEntry(ZPackage package, LeaderboardKey key)
@@ -1765,7 +1430,8 @@ namespace ArenaGuard.Networking
                 FurthestEncounterIndex = package.ReadInt(),
                 ElapsedMilliseconds = package.ReadLong(),
                 RosterRevision = package.ReadLong(),
-                RecordedUtc = DateTime.FromBinary(package.ReadLong())
+                RecordedUtc = DateTime.FromBinary(package.ReadLong()),
+                RecordedServerLocal = ReadString(package, 64)
             };
             if (entry.PlayerId <= 0 || string.IsNullOrWhiteSpace(entry.PlayerName) ||
                 entry.FurthestEncounterIndex < 0 || entry.ElapsedMilliseconds < 0 || entry.RosterRevision < 0)

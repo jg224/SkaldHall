@@ -8,11 +8,13 @@ SkaldHall is a server-authoritative framework for NPC-led activities in Valheim.
 - **Star Ladder:** Fight the same scoped roster at base, one-star, and two-star difficulty.
 - **Specific Monster:** Choose an eligible creature, star level, and quantity from 1 through 10.
 - **Admin-built arenas:** Configure an Arena Core, Arena Master, combat radius, protected radius, Combat Start, and four randomized Enemy Spawns.
+- **Immediate enemy pressure:** Arena enemies receive the authenticated combatant as a direct target before their first AI update, skip Valheim's randomized initial delay, and remain target-locked throughout the encounter.
 - **Safe spectators:** Non-combatants inside the arena become non-targetable, non-interacting ghost spectators.
 - **Protected competition:** Arena combat causes no player death, loot, skill experience, ammunition use, equipment durability loss, or combat damage to protected structures and world objects.
 - **Normalized movement:** Speedy Paths and other general speed bonuses are suppressed inside arenas while Run skill, equipment modifiers, and trinket bonuses remain active.
 - **Temporary food loadouts:** Choose exactly three foods the character has discovered. SkaldHall fills health, stamina, and eitr, preserves Rested for the challenge, and restores the original player state afterward.
 - **Live-server support:** FIFO queues, acceptance timeouts, boundary warnings, forfeiture, server-restart recovery, administrator recovery commands, and persistent leaderboards.
+- **Hall of Champions:** Admins can place a grand one-sided, non-solid wood leaderboard showing every biome and Gauntlet. Each section displays completed Biome Ladder and Star Ladder top-five times and refreshes live when records change.
 
 Arena challenges currently provide leaderboard records only. There are no material rewards.
 
@@ -36,7 +38,9 @@ Authenticated server administrators automatically receive an **Arena Admin Hamme
 4. Place exactly four red **Enemy Spawn** beacons around the combat floor.
 5. Enable the arena from its Core.
 
-Arena Gates are optional travel infrastructure and are not required to run a challenge. Setup objects, boundary rings, and spawn beacons are visible only to authenticated administrators and can be toggled with F7. Admin permission switches separately control terrain editing, construction/demolition, and dropped-item pickup.
+Optionally place one or more **Hall of Champions** boards with the Arena Admin Hammer. Each four-meter-tall board presents Black Forest through Ashlands in order, with Gauntlet as the final section. Players can read every compact live top-five column directly in the world.
+
+Setup objects, boundary rings, and spawn beacons are visible only to authenticated administrators and can be toggled with F7. Admin permission switches separately control terrain editing, construction/demolition, and dropped-item pickup.
 
 ## Planned development
 
@@ -44,9 +48,10 @@ SkaldHall is intended to grow beyond arenas:
 
 - a dedicated **quest-giver NPC** with server-managed objectives and persistent quest progression;
 - additional activity NPCs and Hall roles;
+- a separately designed named hub-travel system with player-buildable entrances and exact return routing;
 - contracts, special events, and other structured multiplayer activities.
 
-These systems are planned and are **not included in 0.0.3**.
+These systems are planned and are **not included in 0.0.4**.
 
 ## License
 

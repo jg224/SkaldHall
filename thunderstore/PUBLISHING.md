@@ -1,11 +1,11 @@
-# SkaldHall 0.0.3 publishing notes
+# SkaldHall 0.0.4 publishing notes
 
 ## Package
 
 - Name: `SkaldHall`
-- Version: `0.0.3`
+- Version: `0.0.4`
 - Namespace/author: `jg224`
-- Dependency string after upload: `jg224-SkaldHall-0.0.3`
+- Dependency string after upload: `jg224-SkaldHall-0.0.4`
 
 ## Suggested Thunderstore categories
 
@@ -22,6 +22,6 @@ Server-authoritative NPC activities for Valheim. Build protected arenas now; que
 
 ## Compatibility note
 
-SkaldHall 0.0.3 contains `SkaldHall.dll` while retaining the `jg224.arenaguard` plugin GUID. This preserves existing test-world arenas, configuration, state files, RPC identity, prefab names, and administrator commands.
+SkaldHall 0.0.4 contains `SkaldHall.dll` while retaining the `jg224.arenaguard` plugin GUID. This preserves existing test-world arenas, configuration, state files, RPC identity, prefab names, and administrator commands.
 
 Early testers must delete the previous `ArenaGuard.dll` rather than keep both filenames installed.

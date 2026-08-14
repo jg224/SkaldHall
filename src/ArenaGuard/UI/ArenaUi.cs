@@ -710,47 +710,6 @@ namespace ArenaGuard.UI
             Plugin.Log?.LogInfo("Opened Arena Core administration for '" + arenaId + "'.");
         }
 
-        public static void OpenGateAdminPanel(string objectId, string arenaId, string displayName, bool isHubGate, bool isFallback)
-        {
-            if (string.IsNullOrWhiteSpace(objectId) || !ArenaWorldObjects.IsLocalAdmin() || !CanDraw())
-            {
-                return;
-            }
-
-            CloseModal();
-            _modalRoot = CreatePanel(isHubGate ? "Return Gate" : "Arena Gate", 620f, 390f);
-            AddLabel(_modalRoot.transform, "Unique name", 20, new Vector2(-195f, 90f), 140f, 35f);
-            var name = AddInput(_modalRoot.transform,
-                string.IsNullOrWhiteSpace(displayName) ? (isHubGate ? "Arena Return" : "Arena Gate") : displayName,
-                new Vector2(80f, 90f), 350f, 42f, InputField.ContentType.Standard);
-
-            AddLabel(_modalRoot.transform,
-                string.IsNullOrWhiteSpace(arenaId) ? "Target arena: not selected" : "Target arena ID: " + arenaId,
-                17, new Vector2(0f, 28f), 550f, 40f);
-
-            Dropdown fallback = null;
-            if (!isHubGate)
-            {
-                AddLabel(_modalRoot.transform, "Fallback entrance", 20, new Vector2(-180f, -32f), 180f, 35f);
-                fallback = AddDropdown(_modalRoot.transform, new Vector2(105f, -32f), 280f, "No", "Yes");
-                fallback.value = isFallback ? 1 : 0;
-            }
-
-            AddButton(_modalRoot.transform, "Save", new Vector2(-105f, -115f), 170f, 48f, () =>
-            {
-                var clean = (name.text ?? string.Empty).Trim();
-                if (clean.Length == 0 || clean.Length > 48 || string.IsNullOrWhiteSpace(arenaId))
-                {
-                    ShowMessage("Select an arena and enter a gate name from 1-48 characters.");
-                    return;
-                }
-                ArenaTeleporters.GateConfigurationRequested?.Invoke(objectId, arenaId, clean,
-                    !isHubGate && fallback != null && fallback.value == 1);
-                CloseModal();
-            });
-            AddButton(_modalRoot.transform, "Close", new Vector2(105f, -115f), 170f, 48f, CloseModal);
-        }
-
         public static bool ShowQueueCall(string arenaId, string sessionId, int seconds = 30)
         {
             if (string.IsNullOrWhiteSpace(arenaId) || string.IsNullOrWhiteSpace(sessionId) || !CanDraw())

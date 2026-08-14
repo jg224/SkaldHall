@@ -16,11 +16,15 @@
     <Compile Include="../../src/ArenaGuard/Rules/ArenaFoodIndexPolicy.cs" Link="Rules/ArenaFoodIndexPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaSpawnSelectionPolicy.cs" Link="Rules/ArenaSpawnSelectionPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaDurationFormatter.cs" Link="Rules/ArenaDurationFormatter.cs" />
+    <Compile Include="../../src/ArenaGuard/Rules/ArenaLeaderboardBoardPolicy.cs" Link="Rules/ArenaLeaderboardBoardPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaQueuePromptPolicy.cs" Link="Rules/ArenaQueuePromptPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaAdminVisualPolicy.cs" Link="Rules/ArenaAdminVisualPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaAdminPermissionPolicy.cs" Link="Rules/ArenaAdminPermissionPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaMovementSpeedPolicy.cs" Link="Rules/ArenaMovementSpeedPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaWildlifePolicy.cs" Link="Rules/ArenaWildlifePolicy.cs" />
+    <Compile Include="../../src/ArenaGuard/Rules/ArenaEnemyLifecyclePolicy.cs" Link="Rules/ArenaEnemyLifecyclePolicy.cs" />
+    <Compile Include="../../src/ArenaGuard/Rules/ArenaCombatantIdentityPolicy.cs" Link="Rules/ArenaCombatantIdentityPolicy.cs" />
+    <Compile Include="../../src/ArenaGuard/Rules/ArenaEnemyAggroPolicy.cs" Link="Rules/ArenaEnemyAggroPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Arenas/ArenaRegistry.cs" Link="Arenas/ArenaRegistry.cs" />
     <Compile Include="../../src/ArenaGuard/Persistence/ArenaStore.cs" Link="Persistence/ArenaStore.cs" />
   </ItemGroup>
