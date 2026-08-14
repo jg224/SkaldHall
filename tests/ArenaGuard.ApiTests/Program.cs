@@ -9,7 +9,7 @@ internal static class Program
 {
     private const string PluginGuid = "jg224.arenaguard";
     private const string PluginName = "SkaldHall";
-    private const string PluginVersion = "0.0.3";
+    private const string PluginVersion = "0.0.4";
     private const string JotunnGuid = "com.jotunn.jotunn";
 
     private static readonly List<KeyValuePair<string, Action<TestContext>>> Tests =
@@ -25,6 +25,7 @@ internal static class Program
             Test("admin spectators retain the Arena Core hover interaction path", VerifyCoreInteractionPath),
             Test("admin permission toggles are server-controlled and enforced", VerifyAdminPermissions),
             Test("live-server recovery and combat boundary safety are wired", VerifyLiveServerSafety),
+            Test("arena enemies wait for network readiness and orphan cleanup", VerifyEnemyLifecycleSafety),
             Test("the Arena Master is a safe persistent challenge host and legacy signs remain loadable", VerifyChallengeAccessPieces),
             Test("runtime hot paths are cached, throttled, and allocation-free", VerifyHotPathPerformance),
             Test("arena movement preserves equipment while suppressing general speed bonuses", VerifyArenaMovementSpeedPolicy),
@@ -92,7 +93,7 @@ internal static class Program
         Equal(PluginGuid, AttributeString(attribute, 0));
         Equal(PluginName, AttributeString(attribute, 1));
         Equal(PluginVersion, AttributeString(attribute, 2));
-        Equal(new Version(0, 0, 3, 0), context.Mod.Name.Version);
+        Equal(new Version(0, 0, 4, 0), context.Mod.Name.Version);
 
         Equal(PluginGuid, ConstantString(plugin, "PluginGuid"));
         Equal(PluginName, ConstantString(plugin, "PluginName"));
@@ -116,7 +117,7 @@ internal static class Program
         TypeDefinition rpc = RequireType(context.Mod, "ArenaGuard.Networking.ArenaRpc");
         FieldDefinition protocol = rpc.Fields.SingleOrDefault(field => field.Name == "ProtocolVersion");
         True(protocol != null && protocol.HasConstant, "ArenaRpc.ProtocolVersion must be a compile-time constant.");
-        Equal(8, Convert.ToInt32(protocol.Constant, CultureInfo.InvariantCulture));
+        Equal(10, Convert.ToInt32(protocol.Constant, CultureInfo.InvariantCulture));
         RequireMethod(rpc, "ValidatePackageHeader");
         RequireMethod(rpc, "NewPackage");
         RequireMethod(rpc, "RequireConsumed");
@@ -200,9 +201,9 @@ internal static class Program
 
         TypeDefinition store = RequireType(context.Mod, "ArenaGuard.Persistence.ArenaStore");
         FieldDefinition schema = store.Fields.SingleOrDefault(field => field.Name == "SchemaVersion");
-        True(schema != null && schema.HasConstant && Convert.ToInt32(schema.Constant, CultureInfo.InvariantCulture) == 3 &&
+        True(schema != null && schema.HasConstant && Convert.ToInt32(schema.Constant, CultureInfo.InvariantCulture) == 4 &&
              ContainsOperandText(RequireMethod(store, "Load"), "MigrateLegacyProgression"),
-            "Persistence schema 3 must migrate legacy progression state before validation.");
+            "Persistence schema 4 must migrate legacy progression state before validation.");
     }
 
     private static void VerifyArenaFoodPreparation(TestContext context)
@@ -278,6 +279,11 @@ internal static class Program
             "Arena food and Rested state must round-trip through the strict resource protocol.");
 
         TypeDefinition engine = RequireType(context.Mod, "ArenaGuard.Sessions.ArenaSessionEngine");
+        MethodDefinition acceptTurn = RequireMethod(engine, "AcceptTurn");
+        True(!ContainsOperandText(acceptTurn, "MoveToStaging") &&
+             acceptTurn.Body.Instructions.Any(instruction => instruction.Operand is string text &&
+                 text.IndexOf("directly to Combat Start", StringComparison.Ordinal) >= 0),
+            "Queue acceptance must open preparation in place; food confirmation owns the only start relocation.");
         True(ContainsString(RequireMethod(engine, "HandleStagingTimeout"),
                 "Restore the timed-out arena food loadout."),
             "A timed-out prepared loadout must enter the normal durable restoration path.");
@@ -362,8 +368,8 @@ internal static class Program
             "ArenaGuard must not use the removed piece_sign prefab name.");
         True(ContainsStringInType(worldObjects, "guard_stone"),
             "Arena Core must inherit the installed guard_stone prefab.");
-        True(ContainsStringInType(worldObjects, "portal_wood"),
-            "Arena gates must inherit the installed portal_wood prefab.");
+        True(!ContainsStringInType(worldObjects, "portal_wood"),
+            "The removed arena portal implementation must not register a portal prefab.");
 
         string valheimRoot = Environment.GetEnvironmentVariable("VALHEIM_ROOT") ?? @"C:\ValheimServer\server";
         string manifestPath = Path.Combine(valheimRoot, "valheim_server_Data", "StreamingAssets", "SoftRef",
@@ -374,7 +380,6 @@ internal static class Program
         {
             "Assets/GameElements/Pieces/sign.prefab",
             "Assets/GameElements/Pieces/guard_stone.prefab",
-            "Assets/GameElements/Pieces/portal_wood.prefab",
             "Assets/Characters/Dverger/Dverger.prefab",
             "Assets/GameElements/Items/trophies/TrophyDvergr.prefab"
         })
@@ -660,6 +665,48 @@ internal static class Program
             "Permission changes must persist, broadcast, and require local devcommands for terrain.");
     }
 
+    private static void VerifyEnemyLifecycleSafety(TestContext context)
+    {
+        TypeDefinition runtime = RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime");
+        TypeDefinition handle = RequireType(context.Mod,
+            "ArenaGuard.Runtime.ArenaServerRuntime/ArenaEnemyHandle");
+        True(handle.Fields.Any(field => field.Name == "NetworkId" && field.FieldType.FullName == "ZDOID") &&
+             handle.Fields.Any(field => field.Name == "InitializationConfirmed") &&
+             handle.Fields.Any(field => field.Name == "PositiveHealthObservedUtc"),
+            "Enemy handles must retain network identity and explicit initialization state.");
+
+        MethodDefinition reconcile = RequireMethod(runtime, "ReconcileArenaEnemies");
+        True(ContainsOperandText(reconcile, "ArenaEnemyLifecyclePolicy::Evaluate") &&
+             ContainsOperandText(reconcile, "ResolveEnemyZdo") &&
+             ContainsOperandText(RequireMethod(runtime, "ResolveEnemyZdo"), "ZDOMan::GetZDO") &&
+             ContainsOperandText(reconcile, "ReportEncounterSpawnFailure"),
+            "Wave reconciliation must use the network record, wait for readiness, and fail closed.");
+        True(!ContainsOperandText(reconcile, "Character::IsDead") &&
+             !ContainsOperandText(reconcile, "Character::GetHealth"),
+            "A missing or not-yet-ready local Character must never clear a wave.");
+
+        MethodDefinition spawn = runtime.Methods.Single(method =>
+            method.Name == "SpawnEncounter" && method.Parameters.Count == 2);
+        True(ContainsOperandText(spawn, "Character::SetHealth") &&
+             ContainsString(spawn, "arenaguard.enemy_tag"),
+            "Spawned arena enemies must receive authoritative health and an indexed cleanup tag.");
+        MethodDefinition registerSummon = RequireMethod(runtime, "RegisterArenaSummon");
+        True(ContainsOperandText(registerSummon, "Character::SetHealth") &&
+             ContainsString(registerSummon, "arenaguard.enemy_tag"),
+            "Indirect summons must receive the same authoritative lifecycle state as initial enemies.");
+
+        MethodDefinition sweep = RequireMethod(runtime, "SweepOrphanArenaEnemies");
+        True(ContainsOperandText(sweep, "ZDOExtraData::GetAllZDOIDsWithHash") &&
+             ContainsOperandText(sweep, "DestroyArenaZdo") &&
+             ContainsOperandText(RequireMethod(runtime, "TickOnMainThread"), "SweepOrphanArenaEnemies"),
+            "The server must continuously remove tagged enemies whose session is no longer active.");
+        MethodDefinition terminalCleanup = runtime.Methods.Single(method =>
+            method.Name == "DespawnSessionEnemies" && method.Parameters.Count == 2);
+        True(ContainsOperandText(terminalCleanup, "DestroyTaggedEnemyZdos") &&
+             runtime.Fields.Any(field => field.Name == "PendingArenaCleanups"),
+            "Terminal cleanup must keep sweeping late-created enemies after the session closes.");
+    }
+
     private static void VerifyChallengeAccessPieces(TestContext context)
     {
         TypeDefinition host = RequireType(context.Mod, "ArenaGuard.World.ArenaChallengeHostBehaviour");
@@ -672,6 +719,49 @@ internal static class Program
             "Arena Master's exact position must publish the arena staging position.");
         True(ContainsOperandText(RequireMethod(host, "Start"), "Humanoid::EquipBestWeapon"),
             "The named Dvergr rogue must equip its normal rogue weapon after spawning.");
+
+        TypeDefinition board = RequireType(context.Mod,
+            "ArenaGuard.World.ArenaLeaderboardBoardBehaviour");
+        True(board.Interfaces.Any(item => item.InterfaceType.FullName == "Hoverable") &&
+             board.Interfaces.All(item => item.InterfaceType.FullName != "Interactable"),
+            "The all-category Hall of Champions must be a one-sided world display without a category interaction menu.");
+        True(ContainsOperandText(RequireMethod(board, "BuildColumn"),
+                 "ArenaLeaderboardBoardPolicy::FormatDuration") &&
+             ContainsOperandText(RequireMethod(board, "BuildColumn"),
+                 "ArenaLeaderboardBoardPolicy::FormatCompactDate") &&
+             ContainsString(RequireMethod(board, "BuildColumn"), "BIOME LADDER") == false,
+            "The physical leaderboard rows must use compact single-line H:MM:SS and server-date formatting.");
+        True(ContainsOperandText(RequireMethod(board, "ReceiveLeaderboard"),
+                 "ArenaLeaderboardBoardPolicy::CompletedTopFive") &&
+             ContainsOperandText(RequireMethod(board, "ReceiveLeaderboard"), "BeginGlow") &&
+             ContainsSingle(RequireMethod(board, "BeginGlow"), 3f),
+            "Boards must show completed top-five results and glow for three seconds only when records change.");
+        True(board.Fields.All(field => !field.Name.EndsWith("Back", StringComparison.Ordinal)) &&
+             !ContainsOperandText(RequireMethod(board, "EnsureTextMeshes"), "Quaternion::Euler"),
+            "The board must have one front-only text face so Valheim's world-text material cannot show a mirrored rear copy.");
+        True(ContainsOperandText(RequireMethod(board, "UpdateFrontTextVisibility"),
+                 "Transform::InverseTransformPoint") &&
+             ContainsOperandText(RequireMethod(board, "UpdateFrontTextVisibility"),
+                 "Utils::GetMainCamera") &&
+             ContainsOperandText(RequireMethod(board, "HasClearLineOfSight"),
+                 "Physics::Raycast") &&
+             ContainsOperandText(RequireMethod(board, "SetTextVisible"),
+                 "Renderer::set_enabled"),
+            "World text must switch off behind the board and whenever solid world geometry blocks the camera's line of sight.");
+        True(CountOperandText(RequireMethod(board, "EnsureTextMeshes"),
+                 "ArenaLeaderboardBoardBehaviour::AddSection") == 7 &&
+             ContainsOperandText(RequireMethod(board, "RequestMissingCategories"),
+                 "ArenaLeaderboardBoardPolicy::DisplayOrder"),
+            "One grand board must render and request every biome section followed by Gauntlet.");
+        True(ContainsSingle(RequireMethod(board, "EnsureTextMeshes"), 0.036f) &&
+             ContainsSingle(RequireMethod(board, "AddSection"), 0.022f) &&
+             ContainsSingle(RequireMethod(board, "AddSection"), 0.020f) &&
+             !ContainsSingle(RequireMethod(board, "AddSection"), 0.028f),
+            "Ladder headings and completion rows must share the same centered bold lettering scale.");
+        True(ContainsOperandText(RequireMethod(board, "CreateText"),
+                 "GameObject::AddComponent<UnityEngine.TextMesh>") &&
+             ContainsOperandText(RequireMethod(board, "CreateText"), "GUIManager") == false,
+            "The live board must render readable world-space text without opening a modal.");
 
         TypeDefinition arenaUi = RequireType(context.Mod, "ArenaGuard.UI.ArenaUi");
         MethodDefinition challengeMenu = RequireMethod(arenaUi, "OpenChallengeMenu");
@@ -723,6 +813,27 @@ internal static class Program
             "Arena Challenge Sign interaction signature no longer matches Valheim's Interactable contract.");
 
         TypeDefinition worldObjects = RequireType(context.Mod, "ArenaGuard.World.ArenaWorldObjects");
+        MethodDefinition registerBoard = RequireMethod(worldObjects, "RegisterLeaderboardBoard");
+        True(ContainsOperandText(registerBoard, "CreateBoardPrimitive") &&
+             ContainsOperandText(registerBoard, "CreateBoardMaterial") &&
+             ContainsOperandText(registerBoard,
+                  "AddWorldBehaviour<ArenaGuard.World.ArenaLeaderboardBoardBehaviour>") &&
+             ContainsOperandText(registerBoard, "ValidateLeaderboardBoardPrefab") &&
+             ContainsString(registerBoard, "piece_nonsolid") &&
+             ContainsString(registerBoard, "SectionDivider") &&
+             ContainsString(registerBoard, "DividerDiamond") &&
+             ContainsSingle(registerBoard, 17.55f) &&
+             ContainsSingle(registerBoard, 4f),
+            "Hall of Champions registration must create the compact 25-percent-narrower framed wood display.");
+        MethodDefinition validateBoard = RequireMethod(worldObjects, "ValidateLeaderboardBoardPrefab");
+        True(ContainsString(validateBoard,
+                "Hall of Champions requires persistent state, a framed wood display, and one trigger-only hover surface."),
+            "Hall of Champions validation must enforce persistent state, its framed wood body, and a trigger-only footprint.");
+        True(ContainsOperandText(RequireMethod(worldObjects, "RegisterPrefabs"),
+                 "RegisterLeaderboardBoard") &&
+             ContainsString(RequireMethod(worldObjects, "RegisterLocalization"),
+                 "arenaguard_leaderboard_board"),
+            "The board must be present in the admin hammer with localized build metadata.");
         MethodDefinition registerHost = RequireMethod(worldObjects, "RegisterChallengeHost");
         foreach (string operand in new[]
                  {
@@ -780,6 +891,16 @@ internal static class Program
             "Challenge Sign behaviour must preserve Valheim's visible 0.1.5 renderer hierarchy at runtime.");
         True(ContainsOperandText(RequireMethod(sign, "Start"), "ArenaWorldObjects::ApplyAdminMarker"),
             "The hidden legacy Arena Challenge Sign must retain staging compatibility for existing worlds.");
+        TypeDefinition rpc = RequireType(context.Mod, "ArenaGuard.Networking.ArenaRpc");
+        True(ContainsOperandText(RequireMethod(rpc, "BroadcastLeaderboard"), "LeaderboardResponseRpc") ||
+             ContainsString(RequireMethod(rpc, "BroadcastLeaderboard"), PluginGuid + ".Leaderboard"),
+            "A new record must broadcast an event-driven refresh to every connected board client.");
+        TypeDefinition runtimeForBoard = RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime");
+        True(ContainsOperandText(RequireMethod(runtimeForBoard, "RecordLeaderboard"),
+                  "ArenaRpc::BroadcastLeaderboard") &&
+              ContainsOperandText(RequireMethod(runtimeForBoard, "OnClientLeaderboardReceived"),
+                  "ArenaLeaderboardBoardBehaviour::ReceiveLeaderboard"),
+            "Record updates must cross the server and client composition paths into every physical board.");
         MethodDefinition registerSign = RequireMethod(worldObjects, "RegisterSign");
         True(registerSign.Parameters.Any(parameter =>
                  parameter.Name == "enabled" && parameter.ParameterType.FullName == "System.Boolean") &&
@@ -788,8 +909,15 @@ internal static class Program
         MethodDefinition registerMarker = RequireMethod(worldObjects, "RegisterMarker");
         True(registerMarker.Parameters.Any(parameter =>
                  parameter.Name == "enabled" && parameter.ParameterType.FullName == "System.Boolean") &&
-             ContainsOperandText(registerMarker, "AddPiece"),
+             ContainsOperandText(registerMarker, "AddPiece") &&
+             ContainsOperandText(registerMarker, "CreateMarkerCraftingIcon"),
             "Legacy position markers must support hidden registration without losing existing-world prefab compatibility.");
+        MethodDefinition markerIcon = RequireMethod(worldObjects, "CreateMarkerCraftingIcon");
+        True(ContainsString(markerIcon, "START") &&
+             ContainsString(markerIcon, "SPAWN") &&
+             ContainsOperandText(markerIcon, "Texture2D::SetPixels32") &&
+             ContainsOperandText(markerIcon, "Sprite::Create"),
+            "Combat Start and Enemy Spawn must have distinct, readable text icons in the admin hammer menu.");
         foreach (string operand in new[]
                  {
                      "CreateMarkerVisuals", "GameObject::AddComponent<UnityEngine.SphereCollider>",
@@ -836,6 +964,14 @@ internal static class Program
              ContainsOperandText(removePiece, "IRemoved::OnRemoved") &&
              ContainsOperandText(removePiece, "ZNetScene::Destroy"),
             "Installed Valheim hammer removal must invoke beacon cleanup before destroying its network object.");
+        TypeDefinition corePreviewPatch = RequireType(context.Mod,
+            "ArenaGuard.World.ArenaCorePlacementPreviewPatch");
+        RequireAttribute(corePreviewPatch, "HarmonyLib.HarmonyPatch");
+        MethodDefinition corePreviewPostfix = RequireMethod(corePreviewPatch, "Postfix");
+        True(ContainsOperandText(corePreviewPostfix, "Player::GetSelectedPiece") &&
+             ContainsString(corePreviewPostfix, "ArenaGuard_Core") &&
+             ContainsOperandText(corePreviewPostfix, "MethodBase::Invoke"),
+            "Clicking the already-selected first Arena Core slot must recreate its missing placement preview.");
 
         TypeDefinition runtime = RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime");
         True(ContainsOperandText(RequireMethod(runtime, "DetectFloorEntryAndBoundary"),
@@ -893,11 +1029,14 @@ internal static class Program
                  "ArenaRegistry::IsWithinCombatRadius"),
             "The server must reject out-of-bounds Combat Start mutations and legacy challenge starts.");
         TypeDefinition registry = RequireType(context.Mod, "ArenaGuard.Arenas.ArenaRegistry");
-        True(!ContainsOperandText(RequireMethod(registry, "MarkersAreComplete"), "ArenaMarkerSet::HubGatePosition"),
-            "Optional gates must not be required to enable a challenge arena.");
-        True(!ContainsOperandText(RequireMethod(registry, "MissingRequiredMarkers"),
-                "ArenaMarkerSet::HubGatePosition"),
-            "Enable diagnostics must not report an optional hub or gate.");
+        True(!registry.Methods.Any(method => method.Name.IndexOf("Gate", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                             method.Name.IndexOf("Route", StringComparison.OrdinalIgnoreCase) >= 0),
+            "The arena registry must not retain the removed portal routing API.");
+        TypeDefinition contracts = RequireType(context.Mod, "ArenaGuard.Domain.PersistedWorldState");
+        True(!contracts.Fields.Any(field => field.Name == "Gates" || field.Name == "Routes") &&
+             !RequireType(context.Mod, "ArenaGuard.Domain.ArenaMarkerSet").Fields
+                 .Any(field => field.Name.IndexOf("Gate", StringComparison.OrdinalIgnoreCase) >= 0),
+            "Saved arena state and marker layouts must not retain portal-era fields.");
         MethodDefinition markerVisibility = RequireMethod(marker, "ApplyAdminVisibility");
         True(!ContainsOperandText(markerVisibility, "MaterialPropertyBlock::.ctor") &&
              marker.Fields.Any(field => field.FieldType.FullName == "UnityEngine.MaterialPropertyBlock") &&
@@ -912,16 +1051,23 @@ internal static class Program
              ContainsOperandText(registerSummon, "DestroyArenaCharacter"),
             "Summoned creatures must inherit encounter identity, suppress drops, and be destroyed if the run ended.");
         MethodDefinition aggroEnemy = RequireMethod(runtime, "AggroArenaEnemy");
+        MethodDefinition maintainAggro = RequireMethod(runtime, "MaintainArenaEnemyAggro");
         MethodDefinition spawnEncounter = runtime.Methods.Single(method =>
             method.Name == "SpawnEncounter" && method.Parameters.Count == 2);
-        True(ContainsOperandText(spawnEncounter, "AggroArenaEnemy") &&
-             ContainsOperandText(registerSummon, "AggroArenaEnemy") &&
+        True(ContainsOperandText(spawnEncounter, "MaintainArenaEnemyAggro") &&
+             ContainsOperandText(registerSummon, "MaintainArenaEnemyAggro") &&
+             ContainsOperandText(RequireMethod(runtime, "ReconcileArenaEnemies"), "MaintainArenaEnemyAggro") &&
+             ContainsOperandText(maintainAggro, "AggroArenaEnemy") &&
+             ContainsOperandText(maintainAggro, "ArenaEnemyAggroPolicy::NextRefreshUtc") &&
              ContainsOperandText(aggroEnemy, "Character::GetBaseAI") &&
+             ContainsOperandText(aggroEnemy, "ZNetView::ClaimOwnership") &&
+             ContainsOperandText(aggroEnemy, "BaseAI::GetTargetCreature") &&
              ContainsOperandText(aggroEnemy, "BaseAI::SetHuntPlayer") &&
              ContainsOperandText(aggroEnemy, "BaseAI::Alert") &&
+             ContainsStringInType(runtime, "m_targetCreature") &&
              ContainsStringInType(runtime, "Wakeup") &&
              ContainsStringInType(runtime, "SetTarget"),
-            "Initial enemies and summons must wake, hunt, alert, and immediately target the active combatant.");
+            "Initial enemies and summons must be server-owned, wake, hunt, alert, immediately target the combatant, and repair any lost target.");
         MethodDefinition despawnEnemies = runtime.Methods
             .First(method => method.Name == "DespawnSessionEnemies" && method.Parameters.Count == 2);
         True(ContainsOperandText(despawnEnemies, "Character::GetAllCharacters") &&
@@ -1004,11 +1150,29 @@ internal static class Program
              ContainsOperandText(targetPrefix, "ArenaRuleContext::GetCombatantId"),
             "BaseAI.IsEnemy must use cached arena/combatant identity lookups.");
 
+        TypeDefinition immediateAggroPatch =
+            RequireType(context.Mod, "ArenaGuard.Rules.ArenaEnemyImmediateAggroPatch");
+        MethodDefinition immediateAggroPrefix = RequireMethod(immediateAggroPatch, "Prefix");
+        True(ContainsOperandText(immediateAggroPrefix, "ZNetView::IsOwner") &&
+             ContainsOperandText(immediateAggroPrefix, "ArenaRuleContext::GetEnemyArenaId") &&
+             ContainsOperandText(immediateAggroPrefix, "ArenaRuleContext::GetCombatantId") &&
+             ContainsStringInType(immediateAggroPatch, "m_updateTargetTimer") &&
+             ContainsSingle(immediateAggroPrefix, 0f) &&
+             ContainsOperandText(immediateAggroPrefix, "FindCombatant") &&
+             ContainsStringInType(immediateAggroPatch, "SetTarget") &&
+             ContainsOperandText(RequireMethod(immediateAggroPatch, "FindCombatant"), "Player::GetAllPlayers") &&
+             ContainsOperandText(immediateAggroPrefix, "BaseAI::SetHuntPlayer") &&
+             ContainsOperandText(immediateAggroPrefix, "BaseAI::Alert") &&
+             !ContainsOperandText(immediateAggroPrefix, "Enumerable"),
+            "The AI owner must remove Valheim's randomized first-target delay without adding a per-frame LINQ scan.");
+
         TypeDefinition ruleContext = RequireType(context.Mod, "ArenaGuard.Rules.ArenaRuleContext");
         True(ContainsOperandText(RequireMethod(ruleContext, "GetEnemyArenaId"),
                  "ConditionalWeakTable") &&
-             ContainsOperandText(RequireMethod(ruleContext, "GetCombatantId"), "CombatantCache"),
-            "Arena identity caches must be present behind the AI hot path.");
+             ContainsOperandText(RequireMethod(ruleContext, "GetCombatantId"), "CombatantCache") &&
+             ContainsSingle(RequireMethod(ruleContext, "GetEnemyArenaId"), 0.05f) &&
+             ContainsSingle(RequireMethod(ruleContext, "GetCombatantId"), 0.05f),
+            "Arena identity caches must be present behind the AI hot path and retry missing replicated identity promptly.");
 
         TypeDefinition worldObjects = RequireType(context.Mod, "ArenaGuard.World.ArenaWorldObjects");
         MethodDefinition hammerAudit = RequireMethod(worldObjects, "GrantOrRemoveAdminHammer");
@@ -1018,6 +1182,11 @@ internal static class Program
             "The admin hammer inventory audit must be throttled and stop allocating result lists.");
 
         TypeDefinition runtime = RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime");
+        MethodDefinition resolveCombatant = RequireMethod(runtime, "ResolveCombatant");
+        True(ContainsOperandText(resolveCombatant, "ClientArenaSnapshots") &&
+             ContainsOperandText(resolveCombatant, "ArenaClientSnapshot::CombatantPlayerId") &&
+             ContainsOperandText(resolveCombatant, "ArenaCombatantIdentityPolicy::Resolve"),
+            "Dedicated-server clients must resolve arena combatants from authenticated snapshots.");
         MethodDefinition arrival = RequireMethod(runtime, "ReportClientCombatStartArrival");
         True(ContainsOperandText(arrival, "Time::get_unscaledTime") &&
              !ContainsOperandText(arrival, "HashSet") &&
@@ -1059,15 +1228,10 @@ internal static class Program
              marker.Fields.Any(field => field.FieldType.FullName == "UnityEngine.MaterialPropertyBlock"),
             "Arena marker visibility must reuse a cached material property block.");
 
-        TypeDefinition gate = RequireType(context.Mod, "ArenaGuard.World.ArenaGateBehaviour");
-        MethodDefinition gateUpdate = RequireMethod(gate, "Update");
-        MethodDefinition gateColor = RequireMethod(gate, "ApplyGateColor");
-        True(ContainsOperandText(gateUpdate, "Time::get_unscaledTime") &&
-             ContainsOperandText(gateUpdate, "Vector3::get_sqrMagnitude") &&
-             !ContainsOperandText(gateUpdate, "Vector3::Distance") &&
-             !ContainsOperandText(gateUpdate, "Renderer::get_material") &&
-             ContainsOperandText(gateColor, "Renderer::SetPropertyBlock"),
-            "Arena gates must throttle proximity work and update shared-material overrides without instancing materials.");
+        True(!context.Mod.MainModule.Types.SelectMany(FlattenTypes).Any(type =>
+                type.FullName.IndexOf("ArenaGate", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                type.FullName.IndexOf("ArenaTeleport", StringComparison.OrdinalIgnoreCase) >= 0),
+            "The removed arena portal behavior and transport types must not remain in the DLL.");
     }
 
     private static void VerifyHarmonyPatchMetadata(TestContext context)
@@ -1097,6 +1261,7 @@ internal static class Program
             ["ArenaArmorDurabilityPatch"] = "Player.DamageArmorDurability",
             ["ArenaEquippedDurabilityPatch"] = "Humanoid.DrainEquipedItemDurability",
             ["ArenaEnemyTargetPatch"] = "BaseAI.IsEnemy",
+            ["ArenaEnemyImmediateAggroPatch"] = "MonsterAI.UpdateAI",
             ["ArenaEnemyDropListPatch"] = "CharacterDrop.GenerateDropList",
             ["ArenaEnemyDeathPatch"] = "Character.OnDeath",
             ["ArenaContainerPatch"] = "Container.Interact",
@@ -1348,6 +1513,15 @@ internal static class Program
         }
 
         return null;
+    }
+
+    private static IEnumerable<TypeDefinition> FlattenTypes(TypeDefinition type)
+    {
+        yield return type;
+        foreach (TypeDefinition nested in type.NestedTypes.SelectMany(FlattenTypes))
+        {
+            yield return nested;
+        }
     }
 
     private static CustomAttribute RequireAttribute(ICustomAttributeProvider provider, string fullName)

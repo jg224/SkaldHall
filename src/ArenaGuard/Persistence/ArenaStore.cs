@@ -15,7 +15,8 @@ namespace ArenaGuard.Persistence
     /// <summary>Atomic, world-scoped storage for arena state and server-wide records.</summary>
     internal static class ArenaStore
     {
-        private const int SchemaVersion = 3;
+        private const int SchemaVersion = 4;
+        private const int ArenaFoodSchemaVersion = 3;
         private const int ScopeSchemaVersion = 2;
         private const int LegacySchemaVersion = 1;
         private const long MaximumSaveBytes = 64L * 1024L * 1024L;
@@ -54,7 +55,8 @@ namespace ArenaGuard.Persistence
                 }
 
                 if (file == null ||
-                    (file.SchemaVersion != SchemaVersion && file.SchemaVersion != ScopeSchemaVersion &&
+                    (file.SchemaVersion != SchemaVersion && file.SchemaVersion != ArenaFoodSchemaVersion &&
+                     file.SchemaVersion != ScopeSchemaVersion &&
                      file.SchemaVersion != LegacySchemaVersion) ||
                     file.State == null ||
                     file.State.WorldUid != worldUid)
@@ -65,17 +67,21 @@ namespace ArenaGuard.Persistence
                     MigrateLegacyProgression(file.State);
                     Plugin.Log?.LogInfo("Migrated ArenaGuard world state from progression schema 1 to scope schema 2.");
                 }
-                if (file.SchemaVersion < SchemaVersion)
+                if (file.SchemaVersion < ArenaFoodSchemaVersion)
                 {
                     InitializeArenaFoodSnapshots(file.State);
                     Plugin.Log?.LogInfo("Migrated ArenaGuard resource snapshots to arena-food schema 3.");
+                }
+                if (file.SchemaVersion < SchemaVersion)
+                {
+                    Plugin.Log?.LogInfo("Migrated SkaldHall world state to schema 4; obsolete arena travel fields were discarded.");
                 }
 
                 NormalizeAndValidate(file.State, worldUid);
                 PersistedWorldState loaded = Clone(file.State);
                 lock (Sync) _current = Clone(loaded);
                 Plugin.Log?.LogInfo($"Loaded ArenaGuard world state {worldUid}: " +
-                                    $"{loaded.Arenas.Count} arena(s), {loaded.Gates.Count} gate(s), " +
+                                    $"{loaded.Arenas.Count} arena(s), " +
                                     $"{loaded.Queue.Count} queued player(s), {loaded.Leaderboard.Count} record(s).");
                 return loaded;
             }
@@ -336,8 +342,6 @@ namespace ArenaGuard.Persistence
                 throw new SerializationException("World UID is missing or does not match.");
 
             state.Arenas = state.Arenas ?? new List<ArenaDefinition>();
-            state.Gates = state.Gates ?? new List<ArenaGateDefinition>();
-            state.Routes = state.Routes ?? new List<PlayerArenaRoute>();
             state.Queue = state.Queue ?? new List<QueueEntry>();
             state.InterruptedSessions = state.InterruptedSessions ?? new List<ArenaSession>();
             state.Leaderboard = state.Leaderboard ?? new List<LeaderboardEntry>();
@@ -363,45 +367,6 @@ namespace ArenaGuard.Persistence
                     throw new SerializationException($"Enabled arena '{id}' does not have a complete marker layout.");
             }
 
-            var gateIds = new HashSet<string>(StringComparer.Ordinal);
-            var gateNames = new HashSet<string>(StringComparer.Ordinal);
-            var gatesById = new Dictionary<string, ArenaGateDefinition>(StringComparer.Ordinal);
-            foreach (ArenaGateDefinition gate in state.Gates)
-            {
-                if (gate == null) throw new SerializationException("Null gate definition.");
-                string id = ArenaRegistry.NormalizeId(gate.GateId);
-                string arenaId = ArenaRegistry.NormalizeId(gate.ArenaId);
-                string name = ArenaRegistry.NormalizeName(gate.DisplayName);
-                if (id == null || arenaId == null || name == null || !arenaIds.Contains(arenaId) ||
-                    !gateIds.Add(id) || !gateNames.Add(name) || !Finite(gate.Position) || !Finite(gate.RotationY))
-                    throw new SerializationException("Gate IDs/names must be unique and target a valid arena.");
-                gate.GateId = id;
-                gate.ArenaId = arenaId;
-                gate.DisplayName = gate.DisplayName.Trim();
-                gate.NormalizedName = name;
-                gatesById.Add(id, gate);
-            }
-
-            foreach (IGrouping<string, ArenaGateDefinition> group in state.Gates.GroupBy(gate => gate.ArenaId))
-            {
-                if (group.Count(gate => gate.IsFallbackEntrance) > 1)
-                    throw new SerializationException($"Arena '{group.Key}' has more than one fallback entrance.");
-            }
-
-            var routePlayers = new HashSet<long>();
-            foreach (PlayerArenaRoute route in state.Routes)
-            {
-                if (route == null || route.PlayerId <= 0 || !routePlayers.Add(route.PlayerId))
-                    throw new SerializationException("Player routes must have unique positive player IDs.");
-                route.ArenaId = ArenaRegistry.NormalizeId(route.ArenaId);
-                route.OriginGateId = ArenaRegistry.NormalizeId(route.OriginGateId);
-                if (route.ArenaId == null || route.OriginGateId == null || !arenaIds.Contains(route.ArenaId) ||
-                    (gatesById.TryGetValue(route.OriginGateId, out ArenaGateDefinition gate) &&
-                     !string.Equals(gate.ArenaId, route.ArenaId, StringComparison.Ordinal)))
-                    throw new SerializationException("Player route targets an invalid entrance.");
-                route.EnteredUtc = Utc(route.EnteredUtc);
-            }
-
             var queuedByArena = new HashSet<string>(StringComparer.Ordinal);
             foreach (QueueEntry entry in state.Queue)
             {
@@ -411,14 +376,6 @@ namespace ArenaGuard.Persistence
                 if (!arenaIds.Contains(entry.Request.ArenaId) ||
                     !queuedByArena.Add(entry.Request.ArenaId + ":" + entry.Request.PlayerId.ToString(CultureInfo.InvariantCulture)))
                     throw new SerializationException("Queue entry targets an unknown arena or duplicates a player.");
-                if (!string.IsNullOrWhiteSpace(entry.OriginGateId))
-                {
-                    entry.OriginGateId = ArenaRegistry.NormalizeId(entry.OriginGateId);
-                    if (entry.OriginGateId == null ||
-                        (gatesById.TryGetValue(entry.OriginGateId, out ArenaGateDefinition origin) &&
-                         !string.Equals(origin.ArenaId, entry.Request.ArenaId, StringComparison.Ordinal)))
-                        throw new SerializationException("Queue origin gate does not target its arena.");
-                }
                 entry.EnqueuedUtc = Utc(entry.EnqueuedUtc);
             }
 
@@ -445,8 +402,7 @@ namespace ArenaGuard.Persistence
 
         private static void EnsureCollectionLimits(PersistedWorldState state)
         {
-            if (state.Arenas.Count > MaximumCollectionEntries || state.Gates.Count > MaximumCollectionEntries ||
-                state.Routes.Count > MaximumCollectionEntries || state.Queue.Count > MaximumCollectionEntries ||
+            if (state.Arenas.Count > MaximumCollectionEntries || state.Queue.Count > MaximumCollectionEntries ||
                 state.InterruptedSessions.Count > MaximumCollectionEntries || state.Leaderboard.Count > MaximumCollectionEntries)
                 throw new SerializationException("Arena state collection limit exceeded.");
         }
@@ -455,7 +411,7 @@ namespace ArenaGuard.Persistence
         {
             if (markers == null) return null;
             if (!Finite(markers.StagingPosition) || !Finite(markers.CombatantStartPosition) ||
-                !Finite(markers.HubGatePosition) || markers.EnemySpawnPositions == null ||
+                markers.EnemySpawnPositions == null ||
                 markers.EnemySpawnPositions.Count != 4 ||
                 markers.EnemySpawnPositions.Any(position => !Finite(position)))
                 throw new SerializationException("Arena marker positions must be finite.");
@@ -722,8 +678,6 @@ namespace ArenaGuard.Persistence
                 WorldUid = worldUid,
                 RosterRevision = 0,
                 Arenas = new List<ArenaDefinition>(),
-                Gates = new List<ArenaGateDefinition>(),
-                Routes = new List<PlayerArenaRoute>(),
                 Queue = new List<QueueEntry>(),
                 InterruptedSessions = new List<ArenaSession>(),
                 Leaderboard = new List<LeaderboardEntry>()
@@ -738,8 +692,6 @@ namespace ArenaGuard.Persistence
                 WorldUid = source.WorldUid,
                 RosterRevision = source.RosterRevision,
                 Arenas = (source.Arenas ?? new List<ArenaDefinition>()).Select(CopyArena).ToList(),
-                Gates = (source.Gates ?? new List<ArenaGateDefinition>()).Select(CopyGate).ToList(),
-                Routes = (source.Routes ?? new List<PlayerArenaRoute>()).Select(CopyRoute).ToList(),
                 Queue = (source.Queue ?? new List<QueueEntry>()).Select(CopyQueueEntry).ToList(),
                 InterruptedSessions = (source.InterruptedSessions ?? new List<ArenaSession>()).Select(CopySession).ToList(),
                 Leaderboard = (source.Leaderboard ?? new List<LeaderboardEntry>()).Select(CopyLeaderboardEntry).ToList()
@@ -760,7 +712,6 @@ namespace ArenaGuard.Persistence
                 {
                     StagingPosition = source.Markers.StagingPosition,
                     CombatantStartPosition = source.Markers.CombatantStartPosition,
-                    HubGatePosition = source.Markers.HubGatePosition,
                     EnemySpawnPositions = source.Markers.EnemySpawnPositions == null
                         ? new List<PositionData>()
                         : new List<PositionData>(source.Markers.EnemySpawnPositions)
@@ -770,37 +721,11 @@ namespace ArenaGuard.Persistence
             };
         }
 
-        private static ArenaGateDefinition CopyGate(ArenaGateDefinition source)
-        {
-            return source == null ? null : new ArenaGateDefinition
-            {
-                GateId = source.GateId,
-                ArenaId = source.ArenaId,
-                DisplayName = source.DisplayName,
-                NormalizedName = source.NormalizedName,
-                Position = source.Position,
-                RotationY = source.RotationY,
-                IsFallbackEntrance = source.IsFallbackEntrance
-            };
-        }
-
-        private static PlayerArenaRoute CopyRoute(PlayerArenaRoute source)
-        {
-            return source == null ? null : new PlayerArenaRoute
-            {
-                PlayerId = source.PlayerId,
-                ArenaId = source.ArenaId,
-                OriginGateId = source.OriginGateId,
-                EnteredUtc = source.EnteredUtc
-            };
-        }
-
         private static QueueEntry CopyQueueEntry(QueueEntry source)
         {
             return source == null ? null : new QueueEntry
             {
                 Request = CopyRequest(source.Request),
-                OriginGateId = source.OriginGateId,
                 QueueSequence = source.QueueSequence,
                 EnqueuedUtc = source.EnqueuedUtc
             };

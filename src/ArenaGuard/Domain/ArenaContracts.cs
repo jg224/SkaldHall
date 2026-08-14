@@ -28,6 +28,17 @@ namespace ArenaGuard.Domain
         Biome = 2
     }
 
+    public enum ArenaLeaderboardCategory
+    {
+        Gauntlet = 0,
+        BlackForest = 1,
+        Swamp = 2,
+        Mountain = 3,
+        Plains = 4,
+        Mistlands = 5,
+        Ashlands = 6
+    }
+
     public enum StarLevel
     {
         Base = 0,
@@ -77,8 +88,7 @@ namespace ArenaGuard.Domain
     {
         Staging,
         CombatantStart,
-        EnemySpawn,
-        HubGate
+        EnemySpawn
     }
 
     public enum ArenaEffectType
@@ -108,7 +118,6 @@ namespace ArenaGuard.Domain
     {
         public PositionData StagingPosition;
         public PositionData CombatantStartPosition;
-        public PositionData HubGatePosition;
         public List<PositionData> EnemySpawnPositions;
     }
 
@@ -123,25 +132,6 @@ namespace ArenaGuard.Domain
         public ArenaMarkerSet Markers;
         public bool Enabled;
         public long Revision;
-    }
-
-    public sealed class ArenaGateDefinition
-    {
-        public string GateId;
-        public string ArenaId;
-        public string DisplayName;
-        public string NormalizedName;
-        public PositionData Position;
-        public float RotationY;
-        public bool IsFallbackEntrance;
-    }
-
-    public sealed class PlayerArenaRoute
-    {
-        public long PlayerId;
-        public string ArenaId;
-        public string OriginGateId;
-        public DateTime EnteredUtc;
     }
 
     public sealed class CreatureDefinition
@@ -203,7 +193,6 @@ namespace ArenaGuard.Domain
     public sealed class QueueEntry
     {
         public ChallengeRequest Request;
-        public string OriginGateId;
         public int QueueSequence;
         public DateTime EnqueuedUtc;
     }
@@ -287,6 +276,7 @@ namespace ArenaGuard.Domain
         public long ElapsedMilliseconds;
         public long RosterRevision;
         public DateTime RecordedUtc;
+        public string RecordedServerLocal;
     }
 
     public sealed class ArenaClientSnapshot
@@ -319,8 +309,6 @@ namespace ArenaGuard.Domain
         public long WorldUid;
         public long RosterRevision;
         public List<ArenaDefinition> Arenas;
-        public List<ArenaGateDefinition> Gates;
-        public List<PlayerArenaRoute> Routes;
         public List<QueueEntry> Queue;
         public List<ArenaSession> InterruptedSessions;
         public List<LeaderboardEntry> Leaderboard;

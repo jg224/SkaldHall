@@ -117,7 +117,10 @@ namespace ArenaGuard.Rules
 
             cached.ArenaId = ResolveEnemyArenaId(character);
             cached.Initialized = true;
-            cached.RefreshAfter = now + 1f;
+            // Network tags may arrive just after a replicated enemy instance.
+            // A one-second negative cache reproduced Valheim's visible idle
+            // pause, so untagged characters are retried on the next AI ticks.
+            cached.RefreshAfter = now + (string.IsNullOrEmpty(cached.ArenaId) ? 0.05f : 1f);
             return cached.ArenaId;
         }
 
@@ -160,7 +163,7 @@ namespace ArenaGuard.Rules
             CombatantCache[arenaId] = new CachedCombatant
             {
                 PlayerId = playerId,
-                RefreshAfter = now + 0.25f
+                RefreshAfter = now + (playerId == 0L ? 0.05f : 0.25f)
             };
             return playerId;
         }

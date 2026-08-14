@@ -122,8 +122,8 @@ try
         else { "" }
         $text = $consoleText + [Environment]::NewLine + $diskText
 
-        $pluginLoaded = $text -match "Loading \[SkaldHall 0\.0\.3\]" -or
-            $text -match "SkaldHall.*0\.0\.3"
+        $pluginLoaded = $text -match "Loading \[SkaldHall 0\.0\.4\]" -or
+            $text -match "SkaldHall.*0\.0\.4"
         $worldReady = $text -match "Game server connected" -or
             $text -match "Registering lobby" -or
             $text -match "World loaded"

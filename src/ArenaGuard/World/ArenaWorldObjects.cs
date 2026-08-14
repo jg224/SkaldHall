@@ -15,12 +15,10 @@ namespace ArenaGuard.World
     {
         Core,
         Sign,
-        EntranceGate,
-        HubGate,
         StagingMarker,
         CombatantStartMarker,
         EnemySpawnMarker,
-        HubGateMarker
+        LeaderboardBoard
     }
 
     public sealed class ArenaWorldObjectPlacement
@@ -44,12 +42,10 @@ namespace ArenaGuard.World
         public const string CorePrefabName = "ArenaGuard_Core";
         public const string ChallengeHostPrefabName = "ArenaGuard_ChallengeHost";
         public const string SignPrefabName = "ArenaGuard_Sign";
-        public const string EntranceGatePrefabName = "ArenaGuard_EntranceGate";
-        public const string HubGatePrefabName = "ArenaGuard_HubGate";
         public const string StagingMarkerPrefabName = "ArenaGuard_StagingMarker";
         public const string CombatantStartMarkerPrefabName = "ArenaGuard_CombatantStartMarker";
         public const string EnemySpawnMarkerPrefabName = "ArenaGuard_EnemySpawnMarker";
-        public const string HubGateMarkerPrefabName = "ArenaGuard_HubGateMarker";
+        public const string LeaderboardBoardPrefabName = "ArenaGuard_LeaderboardBoard";
 
         private const string SignBasePrefabName = "sign";
         private const string ChallengeHostBasePrefabName = "Dverger";
@@ -61,6 +57,7 @@ namespace ArenaGuard.World
         internal const string ZdoPlacementReported = "arenaguard.placement_reported";
         internal const string ZdoMarkerKind = "arenaguard.marker_kind";
         internal const string ZdoMarkerSlot = "arenaguard.marker_slot";
+        internal const string ZdoLeaderboardCategory = "arenaguard.leaderboard_category";
         internal const int MarkerRequestRejected = -2;
 
         private static bool _registered;
@@ -70,6 +67,20 @@ namespace ArenaGuard.World
         private static float _nextGrantAttemptTime;
         private static bool _adminStatusRefreshSubscribed;
         private static readonly HashSet<int> ChallengeHostCharacterIds = new HashSet<int>();
+        private static Sprite _combatStartCraftingIcon;
+        private static Sprite _enemySpawnCraftingIcon;
+
+        private static readonly Dictionary<char, string[]> MarkerIconGlyphs =
+            new Dictionary<char, string[]>
+            {
+                ['A'] = new[] { "01110", "10001", "10001", "11111", "10001", "10001", "10001" },
+                ['N'] = new[] { "10001", "11001", "11001", "10101", "10011", "10011", "10001" },
+                ['P'] = new[] { "11110", "10001", "10001", "11110", "10000", "10000", "10000" },
+                ['R'] = new[] { "11110", "10001", "10001", "11110", "10100", "10010", "10001" },
+                ['S'] = new[] { "11111", "10000", "10000", "11111", "00001", "00001", "11111" },
+                ['T'] = new[] { "11111", "00100", "00100", "00100", "00100", "00100", "00100" },
+                ['W'] = new[] { "10001", "10001", "10001", "10101", "10101", "10101", "01010" }
+            };
 
         public static Func<bool> LocalAdminResolver;
         public static Action<ArenaWorldObjectPlacement> PlacementRequested;
@@ -79,6 +90,7 @@ namespace ArenaGuard.World
         public static Action<string, ArenaMarkerKind, PositionData, int> AdminMarkerRemovalRequested;
         public static Func<Vector3, string> ArenaAtPositionResolver;
         public static Func<string, ArenaDefinition> ArenaDefinitionResolver;
+        public static Action<LeaderboardKey> LeaderboardRequested;
 
         /// <summary>The arena most recently opened by an admin. Newly placed pieces use it as their requested target.</summary>
         public static string SelectedAdminArenaId { get; private set; }
@@ -95,7 +107,6 @@ namespace ArenaGuard.World
             // menu behind (the old "piece_sign" name did exactly that).
             RequirePieceBasePrefab("guard_stone");
             RequirePieceBasePrefab(SignBasePrefabName);
-            RequirePieceBasePrefab("portal_wood");
             RequireChallengeHostSources();
 
             RegisterLocalization();
@@ -122,32 +133,27 @@ namespace ArenaGuard.World
 
             RegisterCore();
             RegisterChallengeHost();
+            RegisterLeaderboardBoard();
             // Kept registered so existing worlds can load old sign ZDOs, but
             // hidden from the hammer. The Arena Master replaces this control.
             RegisterSign(false);
-            RegisterGate(EntranceGatePrefabName, "$arenaguard_entrance_gate", false);
-            RegisterGate(HubGatePrefabName, "$arenaguard_hub_gate", true);
             // Register the two admin-facing setup beacons before any hidden
             // compatibility prefab. A legacy-world issue must never suppress
             // the actual Combat Start and Enemy Spawn hammer entries.
             RegisterMarker(CombatantStartMarkerPrefabName, "$arenaguard_combat_marker", ArenaMarkerKind.CombatantStart);
             RegisterMarker(EnemySpawnMarkerPrefabName, "$arenaguard_enemy_marker", ArenaMarkerKind.EnemySpawn);
 
-            // These names remain registered only so old world ZDOs can load.
-            // Their failures are isolated because Arena Master/Return Gate now
-            // provide the corresponding live positions.
+            // This name remains registered only so old world ZDOs can load.
+            // Its failure is isolated because the Arena Master provides the
+            // corresponding live position.
             TryRegisterCompatibilityMarker(
                 StagingMarkerPrefabName,
                 "$arenaguard_staging_marker",
                 ArenaMarkerKind.Staging);
-            TryRegisterCompatibilityMarker(
-                HubGateMarkerPrefabName,
-                "$arenaguard_hub_marker",
-                ArenaMarkerKind.HubGate);
 
             _registered = true;
             SubscribeAdminStatusRefresh();
-            Plugin.Log?.LogInfo("Registered ArenaGuard admin hammer with Arena Core, Arena Master, two gates, and admin-only Combat/Enemy beacons.");
+            Plugin.Log?.LogInfo("Registered ArenaGuard admin hammer with Arena Core, Arena Master, Hall of Champions, and admin-only Combat/Enemy beacons.");
         }
 
         public static void SelectAdminArena(string arenaId)
@@ -337,6 +343,8 @@ namespace ArenaGuard.World
             _nextHammerAuditTime = 0f;
             _nextGrantAttemptTime = 0f;
             ChallengeHostCharacterIds.Clear();
+            ArenaLeaderboardBoardBehaviour.ResetClientState();
+            LeaderboardRequested = null;
             SelectedAdminArenaId = string.Empty;
         }
 
@@ -729,6 +737,147 @@ namespace ArenaGuard.World
             AddPiece(custom, enabled);
         }
 
+        private static void RegisterLeaderboardBoard()
+        {
+            var custom = new CustomPiece(LeaderboardBoardPrefabName, SignBasePrefabName,
+                Piece("$arenaguard_leaderboard_board", "$arenaguard_leaderboard_board_description"));
+            GameObject prefab = custom.PiecePrefab;
+            Renderer sourceRenderer = prefab.GetComponentsInChildren<Renderer>(true)
+                .FirstOrDefault(candidate => candidate?.sharedMaterial?.shader != null);
+            Material woodMaterial = sourceRenderer?.sharedMaterial;
+            if (woodMaterial == null)
+            {
+                throw new InvalidOperationException("Hall of Champions could not resolve the vanilla sign wood material.");
+            }
+
+            RemoveComponent<Sign>(prefab);
+            RemoveComponent<WearNTear>(prefab);
+            RemoveComponent<Collider>(prefab);
+            RemoveComponent<Renderer>(prefab);
+            RemoveComponent<MeshFilter>(prefab);
+
+            int nonSolidLayer = LayerMask.NameToLayer("piece_nonsolid");
+            if (nonSolidLayer < 0)
+            {
+                throw new InvalidOperationException("Valheim's piece_nonsolid layer is unavailable.");
+            }
+            SetLayerRecursively(prefab, nonSolidLayer);
+            Material panelMaterial = CreateBoardMaterial(woodMaterial, "HallOfChampionsPanel", new Vector2(9f, 2f));
+            Material frameMaterial = CreateBoardMaterial(woodMaterial, "HallOfChampionsFrame", new Vector2(3f, 1f));
+            CreateBoardPrimitive(prefab.transform, "Board", new Vector3(0f, 2.05f, 0f),
+                new Vector3(17.55f, 3.70f, 0.18f), panelMaterial, nonSolidLayer);
+            CreateBoardPrimitive(prefab.transform, "LeftPost", new Vector3(-8.6625f, 2f, -0.02f),
+                new Vector3(0.28f, 4f, 0.24f), frameMaterial, nonSolidLayer);
+            CreateBoardPrimitive(prefab.transform, "RightPost", new Vector3(8.6625f, 2f, -0.02f),
+                new Vector3(0.28f, 4f, 0.24f), frameMaterial, nonSolidLayer);
+            CreateBoardPrimitive(prefab.transform, "TopBeam", new Vector3(0f, 3.92f, -0.02f),
+                new Vector3(17.3625f, 0.16f, 0.24f), frameMaterial, nonSolidLayer);
+            CreateBoardPrimitive(prefab.transform, "BottomBeam", new Vector3(0f, 0.18f, -0.02f),
+                new Vector3(17.3625f, 0.16f, 0.24f), frameMaterial, nonSolidLayer);
+            CreateBoardPrimitive(prefab.transform, "SectionDivider", new Vector3(0f, 3.25f, -0.07f),
+                new Vector3(17.2875f, 0.065f, 0.08f), frameMaterial, nonSolidLayer);
+            foreach (float dividerX in new[] { -6.1875f, -3.7125f, -1.2375f, 1.2375f, 3.7125f, 6.1875f })
+            {
+                CreateBoardPrimitive(prefab.transform, "CategoryDivider", new Vector3(dividerX, 1.71f, -0.07f),
+                    new Vector3(0.065f, 3.08f, 0.08f), frameMaterial, nonSolidLayer);
+                GameObject ornament = CreateBoardPrimitive(prefab.transform, "DividerDiamond",
+                    new Vector3(dividerX, 3.25f, -0.115f), new Vector3(0.15f, 0.15f, 0.07f),
+                    frameMaterial, nonSolidLayer);
+                ornament.transform.localRotation = Quaternion.Euler(0f, 0f, 45f);
+            }
+
+            var interaction = prefab.AddComponent<BoxCollider>();
+            interaction.center = new Vector3(0f, 2f, 0f);
+            interaction.size = new Vector3(17.7f, 4f, 0.55f);
+            interaction.isTrigger = true;
+            ZNetView view = prefab.GetComponent<ZNetView>();
+            if (view != null)
+            {
+                view.m_persistent = true;
+            }
+            Piece piece = prefab.GetComponent<Piece>();
+            if (piece != null)
+            {
+                piece.m_groundPiece = true;
+                piece.m_groundOnly = true;
+                piece.m_clipGround = true;
+                piece.m_noInWater = false;
+            }
+            var board = AddWorldBehaviour<ArenaLeaderboardBoardBehaviour>(prefab,
+                ArenaWorldObjectKind.LeaderboardBoard);
+            ValidateLeaderboardBoardPrefab(prefab, board, interaction);
+            AddPiece(custom);
+        }
+
+        private static Material CreateBoardMaterial(
+            Material source,
+            string name,
+            Vector2 textureScale)
+        {
+            var material = new Material(source) { name = name };
+            if (material.HasProperty("_MainTex"))
+            {
+                material.SetTextureScale("_MainTex", textureScale);
+            }
+            if (material.HasProperty("_BaseMap"))
+            {
+                material.SetTextureScale("_BaseMap", textureScale);
+            }
+            return material;
+        }
+
+        private static GameObject CreateBoardPrimitive(
+            Transform parent,
+            string name,
+            Vector3 localPosition,
+            Vector3 localScale,
+            Material material,
+            int layer)
+        {
+            GameObject visual = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            visual.name = name;
+            visual.layer = layer;
+            visual.transform.SetParent(parent, false);
+            visual.transform.localPosition = localPosition;
+            visual.transform.localRotation = Quaternion.identity;
+            visual.transform.localScale = localScale;
+            Collider collider = visual.GetComponent<Collider>();
+            if (collider != null)
+            {
+                UnityEngine.Object.DestroyImmediate(collider);
+            }
+            Renderer renderer = visual.GetComponent<Renderer>();
+            if (renderer == null)
+            {
+                throw new InvalidOperationException("Hall of Champions could not create its wood renderer.");
+            }
+            int materialSlots = Math.Max(1, renderer.sharedMaterials.Length);
+            renderer.sharedMaterials = Enumerable.Repeat(material, materialSlots).ToArray();
+            return visual;
+        }
+
+        private static void ValidateLeaderboardBoardPrefab(
+            GameObject prefab,
+            ArenaLeaderboardBoardBehaviour board,
+            BoxCollider interaction)
+        {
+            Collider[] colliders = prefab.GetComponentsInChildren<Collider>(true);
+            Renderer[] renderers = prefab.GetComponentsInChildren<Renderer>(true);
+            ZNetView view = prefab.GetComponent<ZNetView>();
+            Piece piece = prefab.GetComponent<Piece>();
+            int hoverableCount = prefab.GetComponentsInChildren<MonoBehaviour>(true)
+                .Count(component => component is Hoverable);
+            if (board == null || view == null || !view.m_persistent || piece?.m_icon == null ||
+                colliders.Length != 1 || !ReferenceEquals(colliders[0], interaction) || !interaction.isTrigger ||
+                renderers.Length < 14 || renderers.Any(renderer => renderer?.sharedMaterial == null) ||
+                hoverableCount != 1)
+            {
+                throw new InvalidOperationException(
+                    "Hall of Champions requires persistent state, a framed wood display, and one trigger-only hover surface.");
+            }
+            Plugin.Log?.LogInfo("Validated persistent one-sided Hall of Champions grand leaderboard board.");
+        }
+
         private static void ValidateChallengeHostPrefab(
             GameObject prefab,
             ArenaChallengeHostBehaviour host,
@@ -765,41 +914,6 @@ namespace ArenaGuard.World
                                 ", persistent=True, aiDisabled=True, nonSolid=True.");
         }
 
-        private static void RegisterGate(string prefabName, string displayName, bool isHub)
-        {
-            var custom = new CustomPiece(prefabName, "portal_wood", Piece(displayName, "$arenaguard_gate_description"));
-            var vanillaPortal = custom.PiecePrefab.GetComponent<TeleportWorld>();
-            var gate = AddWorldBehaviour<ArenaGateBehaviour>(custom.PiecePrefab,
-                isHub ? ArenaWorldObjectKind.HubGate : ArenaWorldObjectKind.EntranceGate);
-            gate.IsHubGate = isHub;
-            if (vanillaPortal != null)
-            {
-                gate.ActivationRange = vanillaPortal.m_activationRange;
-                gate.ExitDistance = vanillaPortal.m_exitDistance;
-                gate.ProximityRoot = vanillaPortal.m_proximityRoot;
-                gate.UnconnectedColor = vanillaPortal.m_colorUnconnected;
-                gate.ConnectedColor = vanillaPortal.m_colorTargetfound;
-                gate.TargetFoundEffect = vanillaPortal.m_target_found;
-                gate.Model = vanillaPortal.m_model;
-                gate.ConnectedEffects = vanillaPortal.m_connected;
-            }
-            ReplacePortalTriggers(custom.PiecePrefab);
-            RemoveComponent<TeleportWorld>(custom.PiecePrefab);
-            AddPiece(custom);
-        }
-
-        private static void ReplacePortalTriggers(GameObject prefab)
-        {
-            foreach (var trigger in prefab.GetComponentsInChildren<TeleportWorldTrigger>(true))
-            {
-                if (trigger.GetComponent<ArenaGateTrigger>() == null)
-                {
-                    trigger.gameObject.AddComponent<ArenaGateTrigger>();
-                }
-                UnityEngine.Object.DestroyImmediate(trigger);
-            }
-        }
-
         private static void RegisterMarker(
             string prefabName,
             string displayName,
@@ -832,7 +946,10 @@ namespace ArenaGuard.World
             {
                 throw new InvalidOperationException("ArenaGuard marker prefab has no Piece component.");
             }
-            piece.m_icon = trophy?.m_itemData?.GetIcon();
+            piece.m_icon = markerKind == ArenaMarkerKind.CombatantStart ||
+                           markerKind == ArenaMarkerKind.EnemySpawn
+                ? CreateMarkerCraftingIcon(markerKind)
+                : trophy?.m_itemData?.GetIcon();
             piece.m_groundPiece = true;
             piece.m_groundOnly = true;
             piece.m_clipGround = true;
@@ -854,6 +971,124 @@ namespace ArenaGuard.World
             marker.MarkerKind = markerKind;
             ValidateMarkerPrefab(prefab, marker, interaction, displayName);
             AddPiece(custom, enabled);
+        }
+
+        private static Sprite CreateMarkerCraftingIcon(ArenaMarkerKind markerKind)
+        {
+            bool combatStart = markerKind == ArenaMarkerKind.CombatantStart;
+            Sprite cached = combatStart ? _combatStartCraftingIcon : _enemySpawnCraftingIcon;
+            if (cached != null)
+            {
+                return cached;
+            }
+
+            // Render the fixed two-pixel glyphs on an 80px canvas. Relative to
+            // the former 64px canvas this makes START/SPAWN exactly 20% smaller
+            // while the UI continues to size the complete sprite normally.
+            const int size = 80;
+            const int glyphScale = 2;
+            string label = combatStart ? "START" : "SPAWN";
+            Color32 accent = combatStart
+                ? new Color32(25, 205, 255, 255)
+                : new Color32(255, 55, 45, 255);
+            Color32 background = new Color32(20, 24, 28, 238);
+            Color32 lettering = new Color32(245, 238, 214, 255);
+            var pixels = new Color32[size * size];
+
+            FillMarkerIconRect(pixels, size, 2, 2, size - 4, size - 4, background);
+            FillMarkerIconRect(pixels, size, 2, 2, size - 4, 3, accent);
+            FillMarkerIconRect(pixels, size, 2, size - 5, size - 4, 3, accent);
+            FillMarkerIconRect(pixels, size, 2, 2, 3, size - 4, accent);
+            FillMarkerIconRect(pixels, size, size - 5, 2, 3, size - 4, accent);
+
+            int wordWidth = label.Length * 5 * glyphScale + (label.Length - 1) * glyphScale;
+            int startX = (size - wordWidth) / 2;
+            int startY = (size - 7 * glyphScale) / 2;
+            for (int index = 0; index < label.Length; index++)
+            {
+                DrawMarkerIconGlyph(
+                    pixels,
+                    size,
+                    label[index],
+                    startX + index * 6 * glyphScale,
+                    startY,
+                    glyphScale,
+                    lettering);
+            }
+
+            var texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                name = "ArenaGuard_" + label + "_Icon",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            texture.SetPixels32(pixels);
+            texture.Apply(false, true);
+            Sprite icon = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(0.5f, 0.5f),
+                size);
+            icon.name = texture.name;
+            if (combatStart)
+            {
+                _combatStartCraftingIcon = icon;
+            }
+            else
+            {
+                _enemySpawnCraftingIcon = icon;
+            }
+            return icon;
+        }
+
+        private static void FillMarkerIconRect(
+            Color32[] pixels,
+            int textureWidth,
+            int x,
+            int y,
+            int width,
+            int height,
+            Color32 color)
+        {
+            for (int row = y; row < y + height; row++)
+            {
+                for (int column = x; column < x + width; column++)
+                {
+                    pixels[row * textureWidth + column] = color;
+                }
+            }
+        }
+
+        private static void DrawMarkerIconGlyph(
+            Color32[] pixels,
+            int textureWidth,
+            char glyph,
+            int x,
+            int y,
+            int scale,
+            Color32 color)
+        {
+            if (!MarkerIconGlyphs.TryGetValue(glyph, out string[] rows))
+            {
+                return;
+            }
+            for (int row = 0; row < rows.Length; row++)
+            {
+                for (int column = 0; column < rows[row].Length; column++)
+                {
+                    if (rows[row][column] == '1')
+                    {
+                        FillMarkerIconRect(
+                            pixels,
+                            textureWidth,
+                            x + column * scale,
+                            y + (rows.Length - 1 - row) * scale,
+                            scale,
+                            scale,
+                            color);
+                    }
+                }
+            }
         }
 
         private static void TryRegisterCompatibilityMarker(
@@ -888,7 +1123,6 @@ namespace ArenaGuard.World
             {
                 case ArenaMarkerKind.CombatantStart: return new Color(0.05f, 0.75f, 1f, 1f);
                 case ArenaMarkerKind.EnemySpawn: return new Color(1f, 0f, 0f, 1f);
-                case ArenaMarkerKind.HubGate: return new Color(1f, 0.7f, 0f, 1f);
                 default: return new Color(0.2f, 1f, 0.25f, 1f);
             }
         }
@@ -1073,7 +1307,7 @@ namespace ArenaGuard.World
                 case ArenaMarkerKind.Staging: return ArenaWorldObjectKind.StagingMarker;
                 case ArenaMarkerKind.CombatantStart: return ArenaWorldObjectKind.CombatantStartMarker;
                 case ArenaMarkerKind.EnemySpawn: return ArenaWorldObjectKind.EnemySpawnMarker;
-                default: return ArenaWorldObjectKind.HubGateMarker;
+                default: throw new ArgumentOutOfRangeException(nameof(markerKind), markerKind, null);
             }
         }
 
@@ -1177,20 +1411,17 @@ namespace ArenaGuard.World
                 ["arenaguard_sign_description"] = "Choose a challenge or view the server leaderboard.",
                 ["arenaguard_challenge_host"] = "Arena Master",
                 ["arenaguard_challenge_host_description"] = "Talk to this named Dvergr rogue to choose a challenge or view the server leaderboard.",
-                ["arenaguard_entrance_gate"] = "Arena Gate",
-                ["arenaguard_hub_gate"] = "Arena Return Gate",
-                ["arenaguard_gate_description"] = "A named SkaldHall portal which preserves vanilla teleport restrictions.",
                 ["arenaguard_staging_marker"] = "Staging Position",
                 ["arenaguard_combat_marker"] = "Combat Start Position",
                 ["arenaguard_enemy_marker"] = "Enemy Spawn Position",
-                ["arenaguard_hub_marker"] = "Hub Gate Position",
                 ["arenaguard_marker_description"] = "Place this marker with the Arena Admin Hammer.",
                 ["arenaguard_combat_marker_description"] = "Admin-only cyan beacon for the combatant's starting point. Place exactly one.",
                 ["arenaguard_enemy_marker_description"] = "Admin-only red enemy spawn beacon. Place four; they number themselves automatically.",
+                ["arenaguard_leaderboard_board"] = "Hall of Champions",
+                ["arenaguard_leaderboard_board_description"] = "A grand one-sided display of every biome and Gauntlet top five.",
                 ["arenaguard_admin_only"] = "Only a server administrator can use this.",
                 ["arenaguard_admin_build_only"] = "Only an authorized arena administrator may build or demolish here.",
-                ["arenaguard_unconfigured"] = "This arena object has not been configured yet.",
-                ["arenaguard_gate_name_topic"] = "Unique gate name"
+                ["arenaguard_unconfigured"] = "This arena object has not been configured yet."
             };
             var language = "English";
             LocalizationManager.Instance.GetLocalization().AddTranslation(in language, tokens);

@@ -1,6 +1,6 @@
 # ArenaGuard — Design Document
 
-ArenaGuard is a required client/server Valheim mod that lets administrators place named Arena Cores and custom Arena Gates that lead many world locations to one protected arena. One player at a time selects a challenge from an arena sign, enters a server-authoritative queue, and fights curated enemies while everyone else becomes an untargetable, non-interacting ghost spectator. Arena structures cannot be damaged, lethal damage ends the challenge without killing the player, and every exit restores a consequence-free state while server-wide leaderboards record performance without granting loot or other rewards.
+ArenaGuard is a required client/server Valheim mod that lets administrators place named Arena Cores for protected challenges. One player at a time selects a challenge from the Arena Master, enters a server-authoritative queue, and fights curated enemies while everyone else becomes an untargetable, non-interacting ghost spectator. Arena structures cannot be damaged, lethal damage ends the challenge without killing the player, and every exit restores a consequence-free state while server-wide leaderboards record performance without granting loot or other rewards.
 
 ## Domain
 
@@ -104,7 +104,6 @@ namespace ArenaGuard.Domain
     {
         public PositionData StagingPosition;
         public PositionData CombatantStartPosition;
-        public PositionData HubGatePosition;
         public System.Collections.Generic.List<PositionData> EnemySpawnPositions;
     }
 
@@ -119,24 +118,6 @@ namespace ArenaGuard.Domain
         public ArenaMarkerSet Markers;
         public bool Enabled;
         public long Revision;
-    }
-
-    public sealed class ArenaGateDefinition
-    {
-        public string GateId;
-        public string ArenaId;
-        public string DisplayName;
-        public string NormalizedName;
-        public PositionData Position;
-        public bool IsFallbackEntrance;
-    }
-
-    public sealed class PlayerArenaRoute
-    {
-        public long PlayerId;
-        public string ArenaId;
-        public string OriginGateId;
-        public System.DateTime EnteredUtc;
     }
 
     public sealed class CreatureDefinition
@@ -195,7 +176,6 @@ namespace ArenaGuard.Domain
     public sealed class QueueEntry
     {
         public ChallengeRequest Request;
-        public string OriginGateId;
         public int QueueSequence;
         public System.DateTime EnqueuedUtc;
     }
@@ -303,8 +283,6 @@ namespace ArenaGuard.Domain
         public long WorldUid;
         public long RosterRevision;
         public System.Collections.Generic.List<ArenaDefinition> Arenas;
-        public System.Collections.Generic.List<ArenaGateDefinition> Gates;
-        public System.Collections.Generic.List<PlayerArenaRoute> Routes;
         public System.Collections.Generic.List<QueueEntry> Queue;
         public System.Collections.Generic.List<ArenaSession> InterruptedSessions;
         public System.Collections.Generic.List<LeaderboardEntry> Leaderboard;
@@ -317,30 +295,28 @@ namespace ArenaGuard.Domain
 | File | Responsibility |
 |---|---|
 | `src/ArenaGuard/Domain/ArenaContracts.cs` | Owns the shared domain types above and no game-facing behavior; every other module imports these exact contracts. |
-| `src/ArenaGuard/Arenas/ArenaRegistry.cs` | Owns in-memory Arena Core, marker, gate, route, occupancy, and queue indexes; exports `RegisterArena(ArenaDefinition)`, `RemoveArena(string)`, `TryGetArena(string, out ArenaDefinition)`, `FindProtectedArena(PositionData)`, `FindCombatArena(PositionData)`, `SetMarkers(string, ArenaMarkerSet)`, `RegisterGate(ArenaGateDefinition)`, `RecordRoute(PlayerArenaRoute)`, and `ResolveReturnGate(long)`. |
+| `src/ArenaGuard/Arenas/ArenaRegistry.cs` | Owns in-memory Arena Core, marker, occupancy, and queue indexes; exports `RegisterArena(ArenaDefinition)`, `RemoveArena(string)`, `TryGetArena(string, out ArenaDefinition)`, `FindProtectedArena(PositionData)`, `FindCombatArena(PositionData)`, and `SetMarkers(string, ArenaMarkerSet)`. |
 | `src/ArenaGuard/Persistence/ArenaStore.cs` | Owns atomic world-UID-keyed JSON persistence and server-wide records; exports `Load(long)`, `Save(PersistedWorldState)`, `RecordResult(LeaderboardEntry)`, `GetLeaderboard(LeaderboardKey)`, and `MarkInterrupted(ArenaSession)`. |
 | `src/ArenaGuard/Challenges/ChallengeCatalog.cs` | Owns the checked-in, administrator-configurable vanilla land-biome roster and planning rules; exports `LoadRoster()`, `ListCreatures(BiomeTier)`, `BuildPlan(ChallengeRequest, BiomeTier)`, and `ValidateCustomSelection(CustomEncounterSelection)`. Mode 1 emits each enabled creature once at base level; mode 2 emits base, one-star, and two-star encounters back-to-back before advancing; mode 3 emits one selected group of 1–10 creatures. Minibosses sort last, Ocean/boss/passive/modded entries are excluded, and Dvergr are explicitly included. |
 | `src/ArenaGuard/Sessions/ArenaSessionEngine.cs` | Owns the pure deterministic queue and session state machine and emits `ArenaEffect` values without calling Unity; exports `Enqueue(QueueEntry)`, `AcceptTurn(long)`, `EnterCombatFloor(long)`, `Tick(DateTime)`, `ReportEncounterCleared(string)`, `ReportBoundaryState(long, bool)`, `ReportLethalDamage(long)`, `Forfeit(long)`, `Disconnect(long)`, `RecoverAfterRestart(PersistedWorldState)`, and `ApplyEffectResult(ArenaEffect, bool)`. |
 | `src/ArenaGuard/Runtime/ArenaServerRuntime.cs` | Owns the main-thread server coordinator that applies engine effects to live Valheim objects; exports `TickOnMainThread()`, `SpawnEncounter(EncounterDefinition)`, `DespawnSessionEnemies(string)`, `MoveToStaging(long)`, `MoveToSpectatorArea(long)`, `CaptureResources(long)`, `RestoreResources(long, SessionOutcome)`, and `RepositionEscapedOrStuckEnemies(string)`. |
-| `src/ArenaGuard/World/ArenaWorldObjects.cs`<br>`src/ArenaGuard/World/ArenaTeleporters.cs` | Owns Jotunn registration and interaction adapters for the hidden admin-only Arena Hammer, Arena Core, Arena Sign/staging point, three active marker types, the legacy hidden staging marker, named Arena Gates, and hub return gate. Exports `RegisterPrefabs()`, `GrantOrRemoveAdminHammer()`, `ApplyAdminMarker()`, `OpenArenaSign()`, `TryEnterGate()`, and `ReturnThroughHubGate()`. Any number of uniquely named entrance gates can target one arena; the hub gate returns each player to their recorded origin or the designated fallback gate while enforcing vanilla teleport restrictions. |
+| `src/ArenaGuard/World/ArenaWorldObjects.cs` | Owns Jotunn registration and interaction adapters for the hidden admin-only Arena Hammer, Arena Core, Arena Master, Arena Sign compatibility piece, active marker types, and the legacy hidden staging marker. Exports `RegisterPrefabs()`, `GrantOrRemoveAdminHammer()`, `ApplyAdminMarker()`, and `OpenArenaSign()`. |
 | `src/ArenaGuard/Rules/ArenaRulePatches.cs`<br>`src/ArenaGuard/Rules/ArenaFoodSelectionPolicy.cs`<br>`src/ArenaGuard/Rules/ArenaFoodIndexPolicy.cs` | Owns the Harmony rules for permanent structure invulnerability, admin-only building/demolition and terrain editing, lethal-damage interception, spectator ghosting and target rejection, arena-enemy targeting, collision suppression, no loot/skill XP, no ammunition use, no durability loss, consumable allowlisting, combatant/spectator interaction locks, the pure exactly-three-food selection invariant, and CraftIndex-compatible Health/Stamina/Eitr grouping. Exports query methods `GetRole(long)`, `CanDamage(...)`, `CanInteract(...)`, `CanConsume(...)`, `ShouldConsumeAmmo(long)`, `ShouldLoseDurability(long)`, `CanGainSkillXp(long)`, `CanDropLoot(string)`, `IsValidArenaTarget(string, long)`, and `RefreshGhostCollisions()`. |
 | `src/ArenaGuard/Networking/ArenaRpc.cs` | Owns required-version client/server registration, sender-to-character resolution, server validation, request/response packages, and client snapshots; exports `Register()`, `RequestChallenge(ChallengeRequest)`, `AcceptQueueCall(string)`, `RequestForfeit(string)`, `RequestAdminMutation(...)`, `BroadcastArenaState(string)`, `SendLeaderboard(long, LeaderboardKey)`, and `Shutdown()`. Clients never choose authoritative player IDs, roles, spawn results, records, or admin status. |
 | `src/ArenaGuard/UI/ArenaUi.cs` | Owns the Arena Master challenge selector, right-side biome and creature pickers, queue acceptance prompt, 60-second three-column discovered-food preparation picker, three-second countdown, combat HUD, forfeit action, admin panel, and server-wide leaderboard display; exports `OpenChallengeMenu(string)`, `OpenFoodPreparation(...)`, `OpenAdminPanel(string)`, `ShowQueueCall(...)`, `RenderSnapshot(ArenaClientSnapshot)`, `ShowLeaderboard(...)`, and `CloseArenaUi()`. Modes 1 and 2 announce starts and outcomes globally; mode 3 remains silent outside the arena. |
 | `src/ArenaGuard/Plugin.cs`<br>`src/ArenaGuard/ArenaGuard.csproj`<br>`ArenaGuard.slnx`<br>`Directory.Build.props`<br>`verify.ps1` | Owns composition, configuration binding, Harmony/Jotunn startup and shutdown, the `net472` client/server project, strict local references with `Private=false`, solution wiring, and the single verification entry point. The server tick is attached to a verified main-thread Valheim lifecycle method; no game API is called from a ThreadPool timer. |
-| `tests/ArenaGuard.CoreTests/Program.cs`<br>`tests/ArenaGuard.CoreTests/ArenaGuard.CoreTests.csproj`<br>`tests/ArenaGuard.ApiTests/Program.cs`<br>`tests/ArenaGuard.ApiTests/ArenaGuard.ApiTests.csproj` | Owns executable zero-NuGet regression suites. Core tests cover plan ordering, star sequences, queue fairness, timeouts, restart recovery, boundary forfeits, resource restoration, routing, announcements, and leaderboard ranking. Cecil API tests prove every patched type/member, RPC payload, portal restriction, AI target hook, damage/death hook, item-use hook, skill/loot hook, Jotunn dependency, plugin metadata, and output-directory invariant against the installed DLLs. |
+| `tests/ArenaGuard.CoreTests/Program.cs`<br>`tests/ArenaGuard.CoreTests/ArenaGuard.CoreTests.csproj`<br>`tests/ArenaGuard.ApiTests/Program.cs`<br>`tests/ArenaGuard.ApiTests/ArenaGuard.ApiTests.csproj` | Owns executable zero-NuGet regression suites. Core tests cover plan ordering, star sequences, queue fairness, timeouts, restart recovery, boundary forfeits, resource restoration, announcements, and leaderboard ranking. Cecil API tests prove every patched type/member, RPC payload, AI target hook, damage/death hook, item-use hook, skill/loot hook, Jotunn dependency, plugin metadata, and output-directory invariant against the installed DLLs. |
 
 ## Conventions
 
 - Build one required client/server `SkaldHall.dll` targeting `net472`, with BepInEx 5.4.2333, Harmony, Jotunn, Valheim, and Unity references resolved from `C:\ValheimServer\server` and always marked `Private=false`.
 - Use BepInEx GUID `jg224.arenaguard`. Require an exact ArenaGuard version match on server and clients; fail connection with a clear message when absent or mismatched.
-- The dedicated server owns arenas, queues, sessions, ladder scopes, spawn plans, roles, records, routes, and admin authorization. Clients may request actions and report owner-side game events, but the server resolves the sending peer and validates the request against current state.
+- The dedicated server owns arenas, queues, sessions, ladder scopes, spawn plans, roles, records, and admin authorization. Clients may request actions and report owner-side game events, but the server resolves the sending peer and validates the request against current state.
 - All Unity, Valheim, Jotunn, ZNet, ZDO, AI, spawning, teleporting, and player mutations run on the Unity main thread. Pure state-machine calculations may run independently but have no game references.
-- Arena IDs, gate IDs, request IDs, plan IDs, session IDs, and enemy IDs are lowercase GUID strings. User-facing arena and gate names are trimmed, case-insensitively unique, and stored separately from IDs.
-- Each Arena Core defaults to a 20-metre combat radius and 30-metre protected radius; require `ProtectedRadius > CombatRadius`, exactly four enemy spawn markers, one Arena Master staging position outside the combat radius, and one combatant-start marker inside it before enabling challenges. Gates are optional travel infrastructure.
+- Arena IDs, request IDs, plan IDs, session IDs, and enemy IDs are lowercase GUID strings. User-facing arena names are trimmed, case-insensitively unique, and stored separately from IDs.
+- Each Arena Core defaults to a 20-metre combat radius and 30-metre protected radius; require `ProtectedRadius > CombatRadius`, exactly four enemy spawn markers, one Arena Master staging position outside the combat radius, and one combatant-start marker inside it before enabling challenges.
 - The outer protected radius is permanently structure-safe: direct, support, and weather damage are rejected, damage-driven resource refunds are suppressed, and generic destructibles, rocks, mine-rock sections, trees, and logs reject combat damage. Intentional admin demolition still returns normal materials. Only server-authenticated non-combatant admins may build, dismantle, or modify terrain under the restored 0.1.5 rules. Doors and containers remain usable when no challenge is active; active combatants and ghost spectators cannot interact with world objects.
 - The Arena Hammer prefab is registered on every client for network consistency but hidden from non-admin UI. It is automatically spawned for authenticated admins, cannot be dropped or transferred, is removed when authorization ends or the player leaves, and never grants authority by possession alone.
-- Arena Gates reuse vanilla portal visuals and effects but use ArenaGuard routing. All entrance gates have unique names, many entrances may target one Arena Core, vanilla teleportability restrictions apply, and the hub gate returns a player to the exact entrance used or a configured fallback if that gate no longer exists.
-- Entering an Arena Gate records the origin before teleporting to the spectator area. Leaving through the hub gate removes the player from the queue and clears the route only after a successful return.
 - One active combatant is allowed per arena. Queues are FIFO. Each server-created call session has a distinct client prompt identity; replacement calls after a timeout reopen the prompt, repeated snapshots for one call do not, and unavailable UI creation is retried. A called player has 30 seconds to accept, then 60 seconds to select and confirm exactly three distinct discovered foods. A missed preparation deadline restores any accepted snapshot, returns the player to the Arena Master, and advances the queue.
 - Food confirmation captures one immutable pre-challenge resource snapshot. The client may select only valid food prefabs known to that character; the server independently validates the count, uniqueness, prefab identity, and food properties before accepting the snapshot. The picker groups foods into three simultaneous CraftIndex-compatible Health, Stamina, and Eitr scroll lists, orders each by its relevant stat, shows color-coded stats in compact rows, and maintains one ordered three-slot selection across every list. The selected foods are applied directly without inventory mutation, health/stamina/eitr are filled, and a non-expiring Rested effect is supplied for the session. Only then does the server move the player to Combat Start and begin the three-second countdown.
 - Every cleared encounter is followed by the same three-second countdown before the next encounter spawns. Victory displays results for five seconds before cleanup and Arena Master return.
