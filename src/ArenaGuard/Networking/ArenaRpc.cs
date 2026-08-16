@@ -301,7 +301,8 @@ namespace ArenaGuard.Networking
 
         internal static bool SendResourceRestore(long playerId, PlayerResourceSnapshot snapshot, SessionOutcome outcome)
         {
-            if (playerId <= 0 || outcome <= SessionOutcome.None || outcome > SessionOutcome.RuntimeError) return false;
+            if (!ArenaPlayerIdentityPolicy.IsValid(playerId) ||
+                outcome <= SessionOutcome.None || outcome > SessionOutcome.RuntimeError) return false;
             PlayerResourceSnapshot wire = ValidateAndCopyResourceSnapshot(snapshot, playerId, true);
             RemoveExpiredResourceRestores();
             ZNet znet = ZNet.instance;
@@ -338,7 +339,8 @@ namespace ArenaGuard.Networking
 
         internal static bool SendPlayerMove(long playerId, PositionData destination, float rotationY = 0f)
         {
-            if (playerId <= 0 || !Finite(destination.X) || !Finite(destination.Y) || !Finite(destination.Z) ||
+            if (!ArenaPlayerIdentityPolicy.IsValid(playerId) ||
+                !Finite(destination.X) || !Finite(destination.Y) || !Finite(destination.Z) ||
                 !Finite(rotationY)) return false;
             ZNet znet = ZNet.instance;
             ZRoutedRpc rpc = ZRoutedRpc.instance;
@@ -425,7 +427,7 @@ namespace ArenaGuard.Networking
 
         internal static void SendLeaderboard(long playerId, LeaderboardKey key)
         {
-            if (playerId <= 0) return;
+            if (!ArenaPlayerIdentityPolicy.IsValid(playerId)) return;
             LeaderboardKey normalized = NormalizeLeaderboardKey(key);
             List<LeaderboardEntry> entries = (_callbacks.LeaderboardRequested?.Invoke(normalized) ??
                                               new List<LeaderboardEntry>()).Take(MaximumLeaderboardEntries).ToList();
@@ -952,7 +954,7 @@ namespace ArenaGuard.Networking
                 IsAdmin = znet.LocalPlayerIsAdminOrHost(),
                 Position = new PositionData { X = position.x, Y = position.y, Z = position.z }
             };
-            return context.PlayerId > 0;
+            return ArenaPlayerIdentityPolicy.IsValid(context.PlayerId);
         }
 
         private static bool TryResolvePeer(ZNetPeer peer, out ArenaRequestContext context)
@@ -966,7 +968,7 @@ namespace ArenaGuard.Networking
             if (prefab == null || prefab.GetComponent<Player>() == null) return false;
 
             long playerId = character.GetLong(ZDOVars.s_playerID, 0L);
-            if (playerId <= 0) return false;
+            if (!ArenaPlayerIdentityPolicy.IsValid(playerId)) return false;
             string playerName = character.GetString(ZDOVars.s_playerName, peer.m_playerName ?? string.Empty);
             Vector3 position = character.GetPosition();
             ZNet znet = ZNet.instance;
@@ -1433,7 +1435,7 @@ namespace ArenaGuard.Networking
                 RecordedUtc = DateTime.FromBinary(package.ReadLong()),
                 RecordedServerLocal = ReadString(package, 64)
             };
-            if (entry.PlayerId <= 0 || string.IsNullOrWhiteSpace(entry.PlayerName) ||
+            if (!ArenaPlayerIdentityPolicy.IsValid(entry.PlayerId) || string.IsNullOrWhiteSpace(entry.PlayerName) ||
                 entry.FurthestEncounterIndex < 0 || entry.ElapsedMilliseconds < 0 || entry.RosterRevision < 0)
                 throw new InvalidOperationException("Leaderboard entry is invalid.");
             return entry;
@@ -1530,7 +1532,8 @@ namespace ArenaGuard.Networking
             long expectedPlayerId, bool requireIdentity)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
-            if (requireIdentity && (expectedPlayerId <= 0 || source.PlayerId != expectedPlayerId))
+            if (requireIdentity &&
+                (!ArenaPlayerIdentityPolicy.IsValid(expectedPlayerId) || source.PlayerId != expectedPlayerId))
                 throw new ArgumentException("Resource snapshot targets another character.", nameof(source));
             if ((source.Foods?.Count ?? 0) > 3 ||
                 (source.ArenaFoodPrefabNames?.Count ?? 0) > ArenaFoodSelectionPolicy.RequiredFoodCount ||

@@ -370,7 +370,8 @@ namespace ArenaGuard.Persistence
             var queuedByArena = new HashSet<string>(StringComparer.Ordinal);
             foreach (QueueEntry entry in state.Queue)
             {
-                if (entry?.Request == null || entry.Request.PlayerId <= 0 || entry.QueueSequence < 0)
+                if (entry?.Request == null ||
+                    !ArenaPlayerIdentityPolicy.IsValid(entry.Request.PlayerId) || entry.QueueSequence < 0)
                     throw new SerializationException("Queue entry is malformed.");
                 NormalizeRequest(entry.Request, true);
                 if (!arenaIds.Contains(entry.Request.ArenaId) ||
@@ -423,7 +424,8 @@ namespace ArenaGuard.Persistence
             if (request == null) throw new SerializationException("Challenge request is missing.");
             request.RequestId = ArenaRegistry.NormalizeId(request.RequestId);
             request.ArenaId = ArenaRegistry.NormalizeId(request.ArenaId);
-            if (request.RequestId == null || request.ArenaId == null || (requireIdentity && request.PlayerId <= 0) ||
+            if (request.RequestId == null || request.ArenaId == null ||
+                (requireIdentity && !ArenaPlayerIdentityPolicy.IsValid(request.PlayerId)) ||
                 request.Mode < ChallengeMode.BiomeLadder || request.Mode > ChallengeMode.CustomEncounter ||
                 request.CapMode < ProgressionCapMode.Gauntlet || request.CapMode > ProgressionCapMode.Biome ||
                 request.CapMode == ProgressionCapMode.Biome &&
@@ -536,7 +538,8 @@ namespace ArenaGuard.Persistence
         private static LeaderboardEntry NormalizeLeaderboardEntry(LeaderboardEntry entry)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
-            if (entry.PlayerId <= 0 || entry.FurthestEncounterIndex < 0 || entry.ElapsedMilliseconds < 0 ||
+            if (!ArenaPlayerIdentityPolicy.IsValid(entry.PlayerId) ||
+                entry.FurthestEncounterIndex < 0 || entry.ElapsedMilliseconds < 0 ||
                 entry.RosterRevision < 0)
                 throw new ArgumentException("Leaderboard result contains invalid numeric values.", nameof(entry));
             string playerName = (entry.PlayerName ?? string.Empty).Trim();

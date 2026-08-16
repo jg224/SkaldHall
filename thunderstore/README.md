@@ -51,7 +51,7 @@ SkaldHall is intended to grow beyond arenas:
 - a separately designed named hub-travel system with player-buildable entrances and exact return routing;
 - contracts, special events, and other structured multiplayer activities.
 
-These systems are planned and are **not included in 0.0.4**.
+These systems are planned and are **not included in 0.0.5**.
 
 ## License
 

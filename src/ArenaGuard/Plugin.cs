@@ -17,7 +17,7 @@ namespace ArenaGuard
     {
         public const string PluginGuid = "jg224.arenaguard";
         public const string PluginName = "SkaldHall";
-        public const string PluginVersion = "0.0.4";
+        public const string PluginVersion = "0.0.5";
         public const string JotunnGuid = "com.jotunn.jotunn";
 
         internal static ManualLogSource Log { get; private set; }

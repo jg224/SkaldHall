@@ -1,6 +1,6 @@
 # SkaldHall
 
-SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.4 provides administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. One player fights at a time while nearby players watch as non-interacting ghost spectators.
+SkaldHall is a server-authoritative framework for NPC-led activities in Valheim. Version 0.0.5 provides administrator-built challenge arenas; a quest-giver NPC and additional Hall activity roles are planned for future releases. One player fights at a time while nearby players watch as non-interacting ghost spectators.
 
 Arena structures cannot take damage. Arena combat grants no loot or skill experience, consumes no ammunition, and causes no equipment durability loss. General movement-speed bonuses such as Speedy Paths are suppressed inside the protected arena while Valheim's Run skill and equipped-item modifiers, including trinkets, remain active. Before teleporting, each combatant chooses exactly three foods their character has discovered. SkaldHall applies that temporary loadout directly, fills health/stamina/eitr, and supplies a challenge-long Rested effect without creating or consuming inventory items. The player's original foods and Rested duration are restored when the run ends. Lethal damage ends the challenge without a player death, clears negative status effects, restores full health, and returns the player three metres in front of the Arena Master.
 
@@ -8,7 +8,7 @@ Arena structures cannot take damage. Arena combat grants no loot or skill experi
 
 - BepInExPack for Valheim 5.4.2333
 - Jötunn 2.29.2
-- SkaldHall 0.0.4 on the server and every client
+- SkaldHall 0.0.5 on the server and every client
 
 SkaldHall uses Jötunn's required-client compatibility check. Keep the same SkaldHall patch version on the server and clients.
 
@@ -128,6 +128,6 @@ The verification entry point builds the release DLL, runs pure rule and session 
 
 ## Planned hub travel
 
-The former arena-bound travel pieces have been removed. A future, separate hub-travel feature may let an administrator define a uniquely named destination such as **Portal A**, expose that name as a normal player-buildable piece, route every copy to the Hall hub, and let the hub exit return each traveler to the exact physical entrance they used. This is a roadmap concept only and is not registered, networked, or persisted by version 0.0.4.
+The former arena-bound travel pieces have been removed. A future, separate hub-travel feature may let an administrator define a uniquely named destination such as **Portal A**, expose that name as a normal player-buildable piece, route every copy to the Hall hub, and let the hub exit return each traveler to the exact physical entrance they used. This is a roadmap concept only and is not registered, networked, or persisted by version 0.0.5.
 
 Routine verification never launches `valheim_server.exe`, so it cannot trigger a Windows Firewall prompt. The optional isolated live-server harness is deliberately gated behind `smoke-server.ps1 -AllowNetworkLaunch`; do not use that switch unless an interactive network smoke is explicitly wanted.

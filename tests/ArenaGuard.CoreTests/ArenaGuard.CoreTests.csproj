@@ -24,6 +24,7 @@
     <Compile Include="../../src/ArenaGuard/Rules/ArenaWildlifePolicy.cs" Link="Rules/ArenaWildlifePolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaEnemyLifecyclePolicy.cs" Link="Rules/ArenaEnemyLifecyclePolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaCombatantIdentityPolicy.cs" Link="Rules/ArenaCombatantIdentityPolicy.cs" />
+    <Compile Include="../../src/ArenaGuard/Rules/ArenaPlayerIdentityPolicy.cs" Link="Rules/ArenaPlayerIdentityPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Rules/ArenaEnemyAggroPolicy.cs" Link="Rules/ArenaEnemyAggroPolicy.cs" />
     <Compile Include="../../src/ArenaGuard/Arenas/ArenaRegistry.cs" Link="Arenas/ArenaRegistry.cs" />
     <Compile Include="../../src/ArenaGuard/Persistence/ArenaStore.cs" Link="Persistence/ArenaStore.cs" />

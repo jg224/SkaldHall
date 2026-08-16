@@ -9,7 +9,7 @@ internal static class Program
 {
     private const string PluginGuid = "jg224.arenaguard";
     private const string PluginName = "SkaldHall";
-    private const string PluginVersion = "0.0.4";
+    private const string PluginVersion = "0.0.5";
     private const string JotunnGuid = "com.jotunn.jotunn";
 
     private static readonly List<KeyValuePair<string, Action<TestContext>>> Tests =
@@ -18,6 +18,7 @@ internal static class Program
             Test("plugin metadata and assembly version are exact", VerifyPluginMetadata),
             Test("Jotunn dependency and network version policy are strict", VerifyCompatibilityMetadata),
             Test("RPC transport carries an exact protocol and mod version", VerifyRpcVersionContract),
+            Test("signed nonzero player IDs cross all authority boundaries", VerifySignedPlayerIdentity),
             Test("gauntlet and biome scopes cross UI, wire, leaderboard, and storage", VerifyChallengeScopes),
             Test("arena food preparation is discovered-only, temporary, and recoverable", VerifyArenaFoodPreparation),
             Test("world piece source prefabs match the installed Valheim assets", VerifyWorldPieceSources),
@@ -93,7 +94,7 @@ internal static class Program
         Equal(PluginGuid, AttributeString(attribute, 0));
         Equal(PluginName, AttributeString(attribute, 1));
         Equal(PluginVersion, AttributeString(attribute, 2));
-        Equal(new Version(0, 0, 4, 0), context.Mod.Name.Version);
+        Equal(new Version(0, 0, 5, 0), context.Mod.Name.Version);
 
         Equal(PluginGuid, ConstantString(plugin, "PluginGuid"));
         Equal(PluginName, ConstantString(plugin, "PluginName"));
@@ -159,6 +160,47 @@ internal static class Program
         True(ContainsOperandText(showQueueCall, "ArenaUi::CanDraw") &&
              ContainsOperandText(RequireMethod(ui, "CloseQueuePromptForArena"), "ArenaUi::CloseQueuePrompt"),
             "Queue prompts must report draw success and close when their arena is no longer called.");
+    }
+
+    private static void VerifySignedPlayerIdentity(TestContext context)
+    {
+        TypeDefinition policy = RequireType(context.Mod, "ArenaGuard.Rules.ArenaPlayerIdentityPolicy");
+        RequireMethod(policy, "IsValid");
+
+        TypeDefinition rpc = RequireType(context.Mod, "ArenaGuard.Networking.ArenaRpc");
+        foreach (string methodName in new[]
+                 {
+                     "SendResourceRestore",
+                     "SendPlayerMove",
+                     "SendLeaderboard",
+                     "TryResolveLocalContext",
+                     "TryResolvePeer",
+                     "ReadLeaderboardEntry",
+                     "ValidateAndCopyResourceSnapshot"
+                 })
+        {
+            True(ContainsOperandText(RequireMethod(rpc, methodName), "ArenaPlayerIdentityPolicy::IsValid"),
+                methodName + " must accept every nonzero signed Valheim player ID.");
+        }
+
+        TypeDefinition registry = RequireType(context.Mod, "ArenaGuard.Arenas.ArenaRegistry");
+        True(ContainsOperandText(RequireMethod(registry, "IsValidQueueEntry"),
+                "ArenaPlayerIdentityPolicy::IsValid"),
+            "Queue validation must accept negative Valheim player IDs.");
+
+        TypeDefinition store = RequireType(context.Mod, "ArenaGuard.Persistence.ArenaStore");
+        True(ContainsOperandText(RequireMethod(store, "NormalizeRequest"),
+                 "ArenaPlayerIdentityPolicy::IsValid") &&
+             ContainsOperandText(RequireMethod(store, "NormalizeLeaderboardEntry"),
+                 "ArenaPlayerIdentityPolicy::IsValid"),
+            "Persistence must retain negative Valheim player IDs.");
+
+        TypeDefinition runtime = RequireType(context.Mod, "ArenaGuard.Runtime.ArenaServerRuntime");
+        True(ContainsOperandText(RequireMethod(runtime, "BuildClientSnapshot"),
+                 "ArenaPlayerIdentityPolicy::IsValid") &&
+             ContainsOperandText(RequireMethod(runtime, "TryResolvePlayerState"),
+                 "ArenaPlayerIdentityPolicy::IsValid"),
+            "Runtime routing and restore state must accept negative Valheim player IDs.");
     }
 
     private static void VerifyChallengeScopes(TestContext context)
