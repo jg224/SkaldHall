@@ -44,11 +44,11 @@ internal static partial class Program
             {
                 RegistryQueueEntry(3, 30, sameTime.AddSeconds(2)),
                 RegistryQueueEntry(1, 10, sameTime.AddSeconds(3)),
-                RegistryQueueEntry(2, 20, sameTime.AddSeconds(1)),
-                RegistryQueueEntry(2, 40, sameTime.AddSeconds(4))
+                RegistryQueueEntry(-893526296, 20, sameTime.AddSeconds(1)),
+                RegistryQueueEntry(-893526296, 40, sameTime.AddSeconds(4))
             });
 
-            SequenceEqual(new[] { 1L, 2L, 3L },
+            SequenceEqual(new[] { 1L, -893526296L, 3L },
                 ArenaRegistry.GetQueueSnapshot(ArenaIdOne).Select(entry => entry.Request.PlayerId));
             SequenceEqual(new[] { 10, 20, 30 },
                 ArenaRegistry.GetQueueSnapshot().Select(entry => entry.QueueSequence));
@@ -162,11 +162,12 @@ internal static partial class Program
             True(ArenaStore.RecordResult(Result(key, 1, true, 4, 50000)), "Completion should replace failure.");
             False(ArenaStore.RecordResult(Result(key, 1, true, 4, 60000)), "Slower completion must not replace best.");
             True(ArenaStore.RecordResult(Result(key, 1, true, 4, 20000)), "Faster completion should replace best.");
-            True(ArenaStore.RecordResult(Result(key, 2, true, 4, 30000)), "Second player should record.");
+            True(ArenaStore.RecordResult(Result(key, -893526296, true, 4, 30000)),
+                "A player with a negative Valheim ID should record.");
             True(ArenaStore.RecordResult(Result(key, 3, false, 5, 1000)), "Failed progress should record.");
 
             var board = ArenaStore.GetLeaderboard(key);
-            SequenceEqual(new[] { 1L, 2L, 3L }, board.Select(entry => entry.PlayerId));
+            SequenceEqual(new[] { 1L, -893526296L, 3L }, board.Select(entry => entry.PlayerId));
             Equal(3, board.Count);
             Equal(20000L, board[0].ElapsedMilliseconds);
             Equal(5, board[2].FurthestEncounterIndex);

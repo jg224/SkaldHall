@@ -24,6 +24,7 @@ internal static partial class Program
         Test("protected arenas exclude passive wildlife without removing protected actors", ProtectedWildlifePolicy),
         Test("arena enemies cannot clear before network initialization", EnemyInitializationLifecycle),
         Test("dedicated clients resolve arena combatants from snapshots", DedicatedClientCombatantIdentity),
+        Test("signed nonzero Valheim player IDs are valid", SignedPlayerIdentity),
         Test("arena enemies maintain an authoritative combatant target", ArenaEnemyAggroTargeting),
         Test("food inventory snapshot remains immutable until restoration", FoodSnapshotIsPreserved),
         Test("queue is FIFO", QueueIsFifo),
@@ -102,6 +103,14 @@ internal static partial class Program
             "An admin must be able to hide setup visuals locally.");
         True(ArenaAdminVisualPolicy.ShouldShow(true, true),
             "An authenticated admin with the toggle enabled should see setup visuals.");
+    }
+
+    private static void SignedPlayerIdentity()
+    {
+        True(ArenaPlayerIdentityPolicy.IsValid(1L), "Positive player IDs must remain valid.");
+        True(ArenaPlayerIdentityPolicy.IsValid(-893526296L),
+            "Valheim-generated negative player IDs must be valid.");
+        False(ArenaPlayerIdentityPolicy.IsValid(0L), "Only zero represents a missing player identity.");
     }
 
     private static void AdminArenaPermissionPolicy()

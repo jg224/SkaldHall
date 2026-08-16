@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using ArenaGuard.Domain;
+using ArenaGuard.Rules;
 
 namespace ArenaGuard.Arenas
 {
@@ -590,7 +591,8 @@ namespace ArenaGuard.Arenas
 
         private static bool IsValidQueueEntry(QueueEntry entry)
         {
-            return entry != null && entry.Request != null && entry.Request.PlayerId > 0 &&
+            return entry != null && entry.Request != null &&
+                   ArenaPlayerIdentityPolicy.IsValid(entry.Request.PlayerId) &&
                    NormalizeId(entry.Request.RequestId) != null && NormalizeId(entry.Request.ArenaId) != null &&
                    entry.QueueSequence >= 0;
         }

@@ -21,14 +21,14 @@ if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) {
 }
 
 $assemblyIdentity = [System.Reflection.AssemblyName]::GetAssemblyName($assembly)
-if ($assemblyIdentity.Name -cne 'SkaldHall' -or $assemblyIdentity.Version -ne [Version]'0.0.4.0') {
-    throw "Release assembly identity must be exactly SkaldHall, Version=0.0.4.0; found '$($assemblyIdentity.FullName)'."
+if ($assemblyIdentity.Name -cne 'SkaldHall' -or $assemblyIdentity.Version -ne [Version]'0.0.5.0') {
+    throw "Release assembly identity must be exactly SkaldHall, Version=0.0.5.0; found '$($assemblyIdentity.FullName)'."
 }
 $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($assembly)
 if ($versionInfo.ProductName -cne 'SkaldHall' -or $versionInfo.FileDescription -cne 'SkaldHall' -or
-    $versionInfo.FileVersion -notlike '0.0.4*' -or $versionInfo.ProductVersion -notlike '0.0.4*' -or
+    $versionInfo.FileVersion -notlike '0.0.5*' -or $versionInfo.ProductVersion -notlike '0.0.5*' -or
     $versionInfo.ProductVersion -match '(?i)alpha') {
-    throw 'Release DLL product/title/version metadata does not identify SkaldHall 0.0.4.'
+    throw 'Release DLL product/title/version metadata does not identify SkaldHall 0.0.5.'
 }
 
 $unexpected = Get-ChildItem -LiteralPath $releaseDir -File |
@@ -39,8 +39,8 @@ if ($unexpected) {
 
 $manifestPath = Join-Path $workspace 'thunderstore\manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.4') {
-    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.4.'
+if ($manifest.name -ne 'SkaldHall' -or $manifest.version_number -ne '0.0.5') {
+    throw 'Thunderstore manifest name/version does not match SkaldHall 0.0.5.'
 }
 
 if ([string]::IsNullOrWhiteSpace($manifest.description) -or $manifest.description.Length -gt 250 -or
@@ -93,4 +93,4 @@ if ($packageReadme -notmatch '(?m)^# SkaldHall\s*$' -or
     throw 'Thunderstore README must use the SkaldHall name, omit alpha phrasing, and describe the planned quest-giver.'
 }
 
-Write-Host 'SkaldHall verification passed: clean Release build, 46 core tests, 17 API tests.' -ForegroundColor Green
+Write-Host 'SkaldHall verification passed: clean Release build, 47 core tests, 18 API tests.' -ForegroundColor Green

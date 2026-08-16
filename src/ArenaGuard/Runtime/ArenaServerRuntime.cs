@@ -1894,7 +1894,8 @@ namespace ArenaGuard.Runtime
 
             ArenaSession active = null;
             _engine?.TryGetActiveSession(arenaId, out active);
-            bool awaitingRestore = viewerPlayerId > 0 && PendingRestores.ContainsKey(viewerPlayerId);
+            bool awaitingRestore = ArenaPlayerIdentityPolicy.IsValid(viewerPlayerId) &&
+                                   PendingRestores.ContainsKey(viewerPlayerId);
             IList<QueueEntry> queue = _engine?.GetQueueSnapshot() ?? new List<QueueEntry>();
             List<QueueEntry> arenaQueue = queue.Where(entry => entry.Request.ArenaId == arenaId)
                 .OrderBy(entry => entry.QueueSequence).ToList();
@@ -3133,7 +3134,8 @@ namespace ArenaGuard.Runtime
             ZNet znet = ZNet.instance;
             ZDOMan zdoMan = ZDOMan.instance;
             ZNetScene scene = ZNetScene.instance;
-            if (playerId <= 0 || znet == null || zdoMan == null || scene == null)
+            if (!ArenaPlayerIdentityPolicy.IsValid(playerId) ||
+                znet == null || zdoMan == null || scene == null)
             {
                 return false;
             }
